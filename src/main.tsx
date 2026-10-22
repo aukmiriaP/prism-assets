@@ -56,9 +56,12 @@ function App() {
   const [bulkTag, setBulkTag] = useState('');
   const [bulkCollection, setBulkCollection] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [detailCollection, setDetailCollection] = useState('');
+  const [organizeBusy, setOrganizeBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [collectionEditor, setCollectionEditor] = useState<Collection | 'new' | null>(null);
+  const [collectionIntent, setCollectionIntent] = useState<'navigation' | 'bulk' | 'detail'>('navigation');
   const [exclusionEditor, setExclusionEditor] = useState<FolderType | null>(null);
   const [copies, setCopies] = useState<Asset[] | null>(null);
   const anchor = useRef<string | null>(null);
@@ -130,7 +133,7 @@ function App() {
   }, [connection, summary]);
   useEffect(() => { virtual.measure(); }, [cellSize, columns]);
   useEffect(() => { setChecked([]); anchor.current = null; }, [scope, activeTag, query, filters, groupDuplicates, topK, modelGroup, resourceRelation]);
-  useEffect(() => { setCopies(null); }, [selected?.id]);
+  useEffect(() => { setCopies(null); setTagDraft(''); setDetailCollection(''); }, [selected?.id]);
   useEffect(() => {
     if (busy || restoreScroll.current === null) return;
     const top = restoreScroll.current;
@@ -259,7 +262,7 @@ function App() {
     const value = await api<Asset>(`/assets/${asset.id}`, 'PATCH', changes);
     resultCache.current.clear();
     setResult(old => ({ ...old, items: old.items.map(a => a.id === value.id ? { ...a, ...value } : a) }));
-    if (selected?.id === value.id) setSelected(value);
+    setSelected(old => old?.id === value.id ? value : old);
     await loadSummary();
     setRefresh(n => n + 1);
   };
@@ -326,6 +329,32 @@ function App() {
     } catch (e) { notify(cleanError(e)); }
     finally { setBulkBusy(false); }
   };
+  const applyDetailTag = () => run(async () => {
+    const asset = selected, tag = tagDraft.trim();
+    if (!asset || !tag || organizeBusy) return;
+    if (asset.tags.includes(tag)) { notify('该素材已具有此标签'); return; }
+    setOrganizeBusy(true);
+    try {
+      await patch(asset, { tags: [...asset.tags, tag] });
+      setTagDraft(''); notify(`已为 ${asset.name} 添加标签「${tag}」`);
+    } finally { setOrganizeBusy(false); }
+  });
+  const joinDetailCollection = () => run(async () => {
+    const asset = selected, target = summary?.collections.find(c => c.id === detailCollection);
+    if (!asset || !target || organizeBusy) return;
+    setOrganizeBusy(true);
+    try {
+      await api('/assets/bulk', 'POST', { ids: [asset.id], collection_id: target.id });
+      resultCache.current.clear();
+      const updated = await api<Asset>(`/assets/${asset.id}`);
+      setSelected(old => old?.id === asset.id ? updated : old);
+      await loadSummary(); setRefresh(n => n + 1);
+      notify(`已加入集合「${target.name}」`);
+    } finally { setOrganizeBusy(false); }
+  });
+  const newCollection = (intent: 'navigation' | 'bulk' | 'detail' = 'navigation') => {
+    setCollectionIntent(intent); setCollectionEditor('new');
+  };
 
   if (fatal) return <div className="boot"><Aperture size={40}/><h1>本地服务暂不可用</h1><p>{fatal}</p><button className="primary" onClick={() => window.prism.restart()}>重新启动应用</button></div>;
   if (!connection || !summary) return <div className="boot"><div className="brand-mark"><Aperture size={34}/></div><h1>PRISM <span>ASSETS</span></h1><p><LoaderCircle className="spin" size={15}/> 正在启动本地素材库…</p><small>首次启动需要准备运行环境，请稍候</small></div>;
@@ -350,7 +379,7 @@ function App() {
         className={scope === f.id ? 'active' : ''} onClick={() => chooseScope(f.id)}>
         {f.status === 'online' ? <Folder size={16}/> : <TriangleAlert size={16}/>}<b>{f.name}</b><span title="目录内文件总数，包含附属贴图">{f.count}</span></button>)
         : <p className="nav-empty">关联文件夹后，素材会出现在这里</p>}</nav>
-      <div className="nav-label">虚拟集合<button title="新建集合" onClick={() => setCollectionEditor('new')}><FolderPlus size={14}/></button></div>
+      <div className="nav-label">虚拟集合<button title="新建集合" onClick={() => newCollection()}><FolderPlus size={14}/></button></div>
       <nav className="collection-nav">{summary.collections.length ? summary.collections.map(c => <button key={c.id} title={`${c.count} 个文件`}
         className={collection?.id === c.id ? 'active' : ''} onClick={() => chooseScope(`collection:${c.id}`)}>
         <Folder size={16}/><b>{c.name}</b><span>{c.count}</span></button>) : <p className="nav-empty">按项目或主题收集素材</p>}</nav>
@@ -397,7 +426,7 @@ function App() {
       <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span>}</h1></div>
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
           <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
-          {collection && <button onClick={() => setCollectionEditor(collection)}>管理集合</button>}
+          {collection && <button onClick={() => { setCollectionIntent('navigation'); setCollectionEditor(collection); }}>管理集合</button>}
           {scope === 'error' && !searching && <button disabled={retryBusy || !result.total} onClick={() => retry()}><RefreshCw size={15}/> 重试当前范围</button>}
           {scope === 'missing' && <button disabled={recoveryBusy || Boolean(running)} onClick={recover}><RefreshCw size={15}/> 查找已移动文件</button>}
           <button className={filtersOpen ? 'selected-control' : ''} onClick={() => setFiltersOpen(v => !v)}><SlidersHorizontal size={15}/> 筛选</button>
@@ -440,16 +469,25 @@ function App() {
           <button disabled={busy || bulkBusy} onClick={() => setChecked(result.items.map(a => a.id))}>全选已显示项</button>
           <button onClick={() => setChecked([])}>清空选择</button>
           <small>聚合项操作应用到当前范围内的全部副本</small></div>
-        <div className="bulk-actions"><input aria-label="批量标签" placeholder="输入一个标签…" value={bulkTag} maxLength={64} onChange={e => setBulkTag(e.target.value)}/>
+        <div className="bulk-actions"><div className="bulk-action-group" aria-label="批量标签操作"><span className="action-group-label">标签</span>
+          <select aria-label="批量已有标签" value={summary.tags.some(t => t.name === bulkTag) ? bulkTag : ''} onChange={e => setBulkTag(e.target.value)}>
+            <option value="">选择已有标签…</option>{summary.tags.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}</select>
+          <input aria-label="批量标签" placeholder="或输入新标签…" value={bulkTag} maxLength={64} onChange={e => setBulkTag(e.target.value)}/>
           <button disabled={!checkedIds.length || !bulkTag.trim() || busy || bulkBusy} onClick={() => bulk({ add_tags: [bulkTag.trim()] })}>添加标签</button>
           <button disabled={!checkedIds.length || !bulkTag.trim() || busy || bulkBusy} onClick={() => bulk({ remove_tags: [bulkTag.trim()] })}>移除标签</button>
+          </div><div className="bulk-action-group" aria-label="批量收藏操作"><span className="action-group-label">收藏</span>
           <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ favorite: true })}>批量收藏</button>
           <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ favorite: false })}>取消收藏</button>
+          </div>
           {checkedAssets.some(a => a.status === 'error') && <button disabled={retryBusy || busy || bulkBusy}
             onClick={() => retry(checkedIds)}>重试选中失败项</button>}
-          <select aria-label="目标集合" value={bulkCollection} onChange={e => setBulkCollection(e.target.value)}><option value="">选择集合…</option>{summary.collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
-          <button disabled={!checkedIds.length || !bulkCollection || busy || bulkBusy} onClick={() => bulk({ collection_id: bulkCollection })}>加入集合</button>
+          <div className="bulk-action-group" aria-label="批量集合操作"><span className="action-group-label">虚拟集合</span>
+          <select aria-label="目标集合" disabled={!summary.collections.length} value={summary.collections.some(c => c.id === bulkCollection) ? bulkCollection : ''} onChange={e => setBulkCollection(e.target.value)}>
+            <option value="">{summary.collections.length ? '选择集合…' : '尚无集合，请先新建'}</option>{summary.collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+          <button disabled={!checkedIds.length || !summary.collections.some(c => c.id === bulkCollection) || busy || bulkBusy} onClick={() => bulk({ collection_id: bulkCollection })}>加入集合</button>
+          <button aria-label="批量新建集合" onClick={() => newCollection('bulk')}>新建集合</button>
           {collection && <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ collection_id: collection.id, collection_action: 'remove' })}>移出当前集合</button>}
+          </div>
         </div>
       </div>}
       <div className="content-row">
@@ -520,14 +558,24 @@ function App() {
               <button onClick={() => run(async () => { openAsset(await api<Asset>(`/assets/${a.id}`)); })}>详情</button></div>)}</div>}
           </div>
           <div className="detail-section"><h3>所在集合</h3><div className="collection-chips">{selected.collections?.map(c => <button className="text-action" key={c.id} onClick={() => chooseScope(`collection:${c.id}`)}>{c.name}</button>)}</div>
-            <button className="text-action" onClick={() => {
+            <div className="detail-organize-controls"><select aria-label="详情目标集合" disabled={organizeBusy || !summary.collections.length}
+              value={summary.collections.some(c => c.id === detailCollection) ? detailCollection : ''} onChange={e => setDetailCollection(e.target.value)}>
+              <option value="">{summary.collections.length ? '选择集合…' : '尚无集合'}</option>{summary.collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+              <button disabled={organizeBusy || !summary.collections.some(c => c.id === detailCollection)} onClick={joinDetailCollection}>加入当前素材</button></div>
+            <button className="text-action" aria-label="详情新建集合" onClick={() => newCollection('detail')}>新建集合</button>
+            <button className="text-action bulk-detail-entry" title="选择此素材后，通过批量工具栏添加标签、收藏或加入集合" onClick={() => {
               const item = result.items.find(a => (a.member_ids || [a.id]).includes(selected.id));
               if (item) { setMultiMode(true); setChecked([item.id]); }
               else notify('此文件不在当前结果范围内，请切换到全部素材后选择');
-            }}>选择此项并加入集合</button></div>
+            }}>批量整理此项</button></div>
           <div className="detail-section"><h3><Tag size={13}/> 标签</h3><div className="asset-tags">{selected.tags.map(t => <span key={t}>{t}<button title={`删除标签 ${t}`} onClick={() => run(() => patch(selected, { tags: selected.tags.filter(x => x !== t) }))}><X size={11}/></button></span>)}</div>
-            <form onSubmit={e => { e.preventDefault(); if (tagDraft.trim()) run(async () => { await patch(selected, { tags: [...selected.tags, tagDraft.trim()] }); setTagDraft(''); }); }}>
-              <input aria-label="添加标签" placeholder="添加标签，回车保存" value={tagDraft} maxLength={64} onChange={e => setTagDraft(e.target.value)}/></form></div>
+            <form onSubmit={e => { e.preventDefault(); applyDetailTag(); }}>
+              <select aria-label="详情已有标签" disabled={organizeBusy} value={summary.tags.some(t => t.name === tagDraft) ? tagDraft : ''} onChange={e => setTagDraft(e.target.value)}>
+                <option value="">选择已有标签…</option>{summary.tags.map(t => <option key={t.name} value={t.name}>{t.name}{selected.tags.includes(t.name) ? '（已应用）' : ''}</option>)}</select>
+              <input aria-label="添加标签" disabled={organizeBusy} placeholder="或输入新标签，回车保存" value={tagDraft} maxLength={64} onChange={e => setTagDraft(e.target.value)}/>
+              <button className="text-action" type="submit" disabled={organizeBusy || !tagDraft.trim() || selected.tags.includes(tagDraft.trim())}>
+                {tagDraft.trim() && selected.tags.includes(tagDraft.trim()) ? '已应用此标签' : '应用标签'}</button>
+            </form></div>
           <div className="detail-section"><h3>原始位置</h3><p className="file-path">{selected.path}</p><div className="path-actions"><button onClick={() => run(() => window.prism.reveal(selected.path))}><FolderOpen size={14}/> Finder</button><button onClick={() => run(async () => { await window.prism.copy(selected.path); notify('已复制原始路径'); })}><Copy size={14}/> 复制路径</button></div>
             <button className="open-original" onClick={() => run(() => window.prism.openFile(selected.id))}>使用默认应用打开 <ArrowRight size={13}/></button></div>
           {Boolean(selected.history?.length) && <div className="detail-section"><h3>历史位置</h3>{selected.history?.map((entry, i) =>
@@ -554,7 +602,12 @@ function App() {
       <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型的两张外观预览图，不判断拓扑或动作。PMX 展示基础材质，MMD 特效不完整还原；当前不播放动画。图片限制 100 MB / 4000 万像素，模型限制 512 MB。暂不解析视频与 PSD。</p></div>
     </section></div>}
     {collectionEditor && <CollectionEditor collection={collectionEditor === 'new' ? undefined : collectionEditor} close={() => setCollectionEditor(null)}
-      saved={async (id, deleted) => { await loadSummary(); setRefresh(n => n + 1); chooseScope(deleted ? 'all' : `collection:${id}`); }}/>}
+      saved={async (id, deleted) => {
+        resultCache.current.clear(); await loadSummary(); setRefresh(n => n + 1);
+        if (!deleted && collectionIntent === 'bulk') setBulkCollection(id || '');
+        else if (!deleted && collectionIntent === 'detail') setDetailCollection(id || '');
+        else chooseScope(deleted ? 'all' : `collection:${id}`);
+      }}/>}
     {exclusionEditor && <ExclusionEditor folder={exclusionEditor} close={() => setExclusionEditor(null)}
       saved={async () => { await loadSummary(); setRefresh(n => n + 1); setChecked([]); setSelected(null); }}/>}
     {preview && selected && (selected.kind === 'model' ? <ModelViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : <div className="lightbox" role="dialog" aria-label="大图预览" onClick={() => setPreview(false)}><button title="关闭预览" onClick={() => setPreview(false)}><X size={23}/></button>{previewError ? <p>原图无法读取，请检查文件是否移动或磁盘是否连接。</p> : <img src={imageUrl(selected, true)} alt={selected.name} onError={() => setPreviewError(true)} onClick={e => e.stopPropagation()}/>}<div>{selected.name}<span>{selected.width} × {selected.height} · ESC 关闭</span></div></div>)}
