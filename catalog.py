@@ -117,13 +117,17 @@ class Catalog:
             ("assets", "kind", "TEXT NOT NULL DEFAULT 'image'"),
             ("assets", "model_data", "TEXT"),
             ("assets", "dependency_stamp", "TEXT"),
+            ("assets", "archived", "INTEGER NOT NULL DEFAULT 0"),
+            ("assets", "replacements", "TEXT NOT NULL DEFAULT '[]'"),
         ]:
             if column not in {r["name"] for r in self.rows(f"PRAGMA table_info({table})")}:
                 self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
         self.execute("CREATE INDEX IF NOT EXISTS asset_hash ON assets(hash)")
+        self.execute("""CREATE TABLE IF NOT EXISTS relocation_history(
+            id INTEGER PRIMARY KEY,asset_id TEXT,old_path TEXT,replacements TEXT,action TEXT,created REAL)""")
         old = self.rows("SELECT value FROM meta WHERE key='profile'")
         if old and old[0]["value"] != PROFILE:
-            self.execute("UPDATE assets SET vector=NULL,status='pending'")
+            self.execute("UPDATE assets SET vector=NULL,status='pending' WHERE archived=0")
         self.execute("INSERT OR REPLACE INTO meta VALUES('profile',?)", (PROFILE,))
         self.execute("UPDATE jobs SET status='interrupted',error='上次退出时中断，已安排恢复' "
                      "WHERE status IN ('queued','running')")
@@ -209,6 +213,8 @@ class Catalog:
             if fid in self.active:
                 raise ValueError("目录正在索引，请等待任务完成后解除关联")
             thumbs = self.rows("SELECT id,thumbnail FROM assets WHERE folder_id=?", (fid,))
+            self.execute("""DELETE FROM relocation_history WHERE asset_id IN
+                (SELECT id FROM assets WHERE folder_id=?)""", (fid,))
             self.execute("DELETE FROM folders WHERE id=?", (fid,))
             for row in thumbs:
                 if row["thumbnail"]:
@@ -254,7 +260,7 @@ class Catalog:
             if not folders:
                 raise ValueError("目录不存在")
             folder = folders[0]
-            assets = self.rows("SELECT path,excluded FROM assets WHERE folder_id=?", (fid,))
+            assets = self.rows("SELECT path,excluded FROM assets WHERE folder_id=? AND archived=0", (fid,))
             flags = [self.excluded_path(a["path"], folder["path"], rules) for a in assets]
             result = {"rules": rules, "excluded_files": sum(flags),
                       "newly_excluded": sum(flag and not a["excluded"] for a, flag in zip(assets, flags)),
@@ -290,11 +296,11 @@ class Catalog:
         """Queue failed files only, retaining asset IDs and all user metadata."""
         with self.lock:
             if ids:
-                ids = list(dict.fromkeys(ids))
+                ids = list(dict.fromkeys(self.resolve_asset_id(aid) for aid in ids))
                 assets = self.rows("SELECT * FROM assets WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
                 if len(assets) != len(ids):
                     raise ValueError("部分素材不存在，请刷新后重试")
-                assets = [a for a in assets if a["status"] == "error" and not a["excluded"]]
+                assets = [a for a in assets if a["status"] == "error" and not a["excluded"] and not a["archived"]]
             else:
                 clauses, params = self.asset_filters({**(filters or {}), "status": "error"})
                 assets = self.rows("SELECT a.* FROM assets a WHERE " + " AND ".join(clauses), params)
@@ -393,7 +399,7 @@ class Catalog:
                          if kind == "model" else None)
                 if (old and old["mtime"] == stat.st_mtime_ns and old["size"] == stat.st_size
                         and (kind != "model" or old["dependency_stamp"] == stamp)
-                        and old["status"] != "pending" and old["status"] != "missing"
+                        and not old["archived"] and old["status"] != "pending" and old["status"] != "missing"
                         and not (retry and old["status"] == "error")):
                     continue
                 aid = old["id"] if old else uuid.uuid4().hex
@@ -405,7 +411,7 @@ class Catalog:
                         VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET
                         size=excluded.size,mtime=excluded.mtime,status='pending',vector=NULL,error=NULL,
                         hash=NULL,updated=excluded.updated,excluded=excluded.excluded,
-                        kind=excluded.kind,dependency_stamp=excluded.dependency_stamp""",
+                        kind=excluded.kind,dependency_stamp=excluded.dependency_stamp,archived=0,replacements='[]'""",
                                  (aid, fid, key, name, path.suffix[1:].lower(), stat.st_size,
                                   stat.st_mtime_ns, now, now, excluded, kind, stamp))
                 pending.append((aid, path, stat.st_mtime_ns, stat.st_size))
@@ -417,10 +423,12 @@ class Catalog:
             self.execute("UPDATE folders SET status='error' WHERE id=?", (fid,))
         else:
             for key, old in existing.items():
-                if key not in seen and not self.excluded_path(key, base, rules) and not self.excluded_path(key, base, current_rules):
+                if not old["archived"] and key not in seen and not self.excluded_path(key, base, rules) and not self.excluded_path(key, base, current_rules):
                     self.execute("UPDATE assets SET status='missing',vector=NULL WHERE id=?", (old["id"],))
             self.execute("UPDATE folders SET status='online',scanned=? WHERE id=?", (time.time(), fid))
         if automatic and not pending and not walk_errors:
+            self.recover_missing(fid)
+            self.refresh_model_groups(fid)
             self.execute("DELETE FROM jobs WHERE id=?", (jid,))
             return
         self.execute("UPDATE jobs SET total=? WHERE id=?", (len(pending), jid))
@@ -438,6 +446,9 @@ class Catalog:
                 self.execute("UPDATE assets SET status='error',vector=NULL,error=? WHERE id=?",
                              (str(exc)[:1000], aid))
             self.execute("UPDATE jobs SET done=?,failed=? WHERE id=?", (i + 1, failed, jid))
+        if not walk_errors:
+            self.recover_missing(fid)
+            self.refresh_model_groups(fid)
         self.execute("UPDATE jobs SET status=?,error=?,finished=? WHERE id=?",
                      ("failed" if walk_errors else "partial" if failed else "completed",
                       "; ".join(map(str, walk_errors))[:1000] if walk_errors else None, time.time(), jid))
@@ -501,10 +512,9 @@ class Catalog:
             metadata["bound_textures"] = sum(r["kind"] == "texture" and r["relation"] == "bound" for r in metadata["resources"])
             metadata["auxiliary_files"] = sum(r["relation"] == "auxiliary" for r in metadata["resources"])
             metadata["missing_resources"] = sum(not r["exists"] for r in metadata["resources"])
-            folder = self.rows("SELECT f.path FROM folders f JOIN assets a ON a.folder_id=f.id WHERE a.id=?", (aid,))[0]
-            # Auxiliary grouping is safe only for a dedicated, single-model subfolder.
-            dedicated = path.parent != Path(folder["path"]) and sum(
-                p.suffix.lower() in MODEL_EXTENSIONS for p in path.parent.rglob("*") if p.is_file()) == 1
+            # The linked root can itself be a dedicated model folder.
+            dedicated = sum(p.suffix.lower() in MODEL_EXTENSIONS
+                            for p in path.parent.rglob("*") if p.is_file()) == 1
             with self.lock, self.db:
                 self.db.execute("DELETE FROM model_resources WHERE model_id=?", (aid,))
                 self.db.executemany("INSERT OR IGNORE INTO model_resources VALUES(?,?,?)",
@@ -528,12 +538,13 @@ class Catalog:
         asset = self.get_asset(aid)
         if asset["kind"] != "model" or not asset.get("model") or asset["status"] not in ("ready", "error"):
             raise ValueError("模型预览尚未生成")
-        path = self.models / aid / asset["model"]["cache"] / filename
+        path = self.models / asset["id"] / asset["model"]["cache"] / filename
         if not path.is_file():
             raise FileNotFoundError(path)
         return path
 
     def similar_vector(self, aid):
+        aid = self.resolve_asset_id(aid)
         row = self.rows("SELECT * FROM assets WHERE id=?", (aid,))
         if not row or row[0]["status"] != "ready" or row[0]["vector"] is None:
             raise ValueError("请等待素材索引完成后再查找相似")
@@ -546,9 +557,97 @@ class Catalog:
         item["model"] = json.loads(item.pop("model_data") or "null")
         item["tags"] = json.loads(item["tags"])
         item["favorite"] = bool(item["favorite"])
+        item["replacements"] = json.loads(item["replacements"])
         return item
 
+    def resolve_asset_id(self, aid):
+        visited = set()
+        while aid not in visited:
+            visited.add(aid)
+            row = self.rows("SELECT archived,replacements FROM assets WHERE id=?", (aid,))
+            if not row or not row[0]["archived"]:
+                return aid
+            targets = json.loads(row[0]["replacements"])
+            if len(targets) != 1:
+                return aid
+            aid = targets[0]
+        raise ValueError("恢复记录存在循环")
+
+    def recovery_candidates(self, asset):
+        """Only verified, online images inside this linked directory can replace a lost image."""
+        if asset["kind"] != "image" or not asset["hash"]:
+            return []
+        candidates = []
+        for row in self.rows("""SELECT * FROM assets WHERE folder_id=? AND hash=? AND id!=?
+                AND kind='image' AND status='ready' AND excluded=0 AND archived=0""",
+                (asset["folder_id"], asset["hash"], asset["id"])):
+            try:
+                stat = Path(row["path"]).stat()
+                if stat.st_mtime_ns == row["mtime"] and stat.st_size == row["size"]:
+                    candidates.append(row)
+            except OSError:
+                pass
+        named = [a for a in candidates if a["name"].casefold() == asset["name"].casefold()]
+        return sorted(named or candidates, key=lambda a: a["path"])
+
+    def archive_relocation(self, old, candidates, action):
+        ids = [a["id"] for a in candidates]
+        if len(candidates) == 1:
+            target = candidates[0]
+            tags = list(dict.fromkeys(json.loads(target["tags"]) + json.loads(old["tags"])))
+            # Migration can preserve more than the editor's 30-tag limit.
+            self.db.execute("UPDATE assets SET tags=?,favorite=max(favorite,?) WHERE id=?",
+                            (json.dumps(tags, ensure_ascii=False), old["favorite"], target["id"]))
+            self.db.execute("""INSERT OR IGNORE INTO collection_assets(collection_id,asset_id)
+                SELECT collection_id,? FROM collection_assets WHERE asset_id=?""", (target["id"], old["id"]))
+        encoded = json.dumps(ids)
+        self.db.execute("UPDATE assets SET archived=1,replacements=?,vector=NULL WHERE id=?", (encoded, old["id"]))
+        self.db.execute("""INSERT INTO relocation_history(asset_id,old_path,replacements,action,created)
+            VALUES(?,?,?,?,?)""", (old["id"], old["path"], encoded, action, time.time()))
+
+    def recover_missing(self, fid=None):
+        """Retain historical rows. Ambiguous annotated moves always require a user's choice."""
+        result = {"recovered": 0, "duplicates": 0, "ambiguous": 0, "missing": 0}
+        with self.lock, self.db:
+            rows = self.rows("""SELECT a.* FROM assets a JOIN folders f ON f.id=a.folder_id
+                WHERE a.status='missing' AND a.excluded=0 AND a.archived=0 AND f.status='online'"""
+                + (" AND a.folder_id=?" if fid else ""), (fid,) if fid else ())
+            for old in rows:
+                if fid is None and old["folder_id"] in self.active:
+                    continue
+                # A file may have reappeared after enumeration: let the next scan handle it.
+                if Path(old["path"]).exists():
+                    continue
+                candidates = self.recovery_candidates(old)
+                annotated = old["favorite"] or json.loads(old["tags"]) or self.rows(
+                    "SELECT 1 FROM collection_assets WHERE asset_id=? LIMIT 1", (old["id"],))
+                if len(candidates) == 1:
+                    self.archive_relocation(old, candidates, "reconnected")
+                    result["recovered"] += 1
+                elif candidates and not annotated:
+                    self.archive_relocation(old, candidates, "duplicate_locations")
+                    result["duplicates"] += 1
+                else:
+                    result["ambiguous" if candidates else "missing"] += 1
+        return result
+
+    def reconnect_asset(self, aid, target_id):
+        with self.lock, self.db:
+            rows = self.rows("SELECT * FROM assets WHERE id=? AND status='missing' AND archived=0", (aid,))
+            if not rows or Path(rows[0]["path"]).exists():
+                raise ValueError("此文件已恢复，请刷新")
+            old = rows[0]
+            if old["folder_id"] in self.active:
+                raise ValueError("目录正在扫描，请完成后再恢复")
+            candidates = self.recovery_candidates(old)
+            target = next((a for a in candidates if a["id"] == target_id), None)
+            if not target:
+                raise ValueError("候选文件已变动，请重新扫描后选择")
+            self.archive_relocation(old, [target], "user_reconnected")
+        return self.get_asset(target_id)
+
     def get_asset(self, aid):
+        aid = self.resolve_asset_id(aid)
         rows = self.rows("SELECT * FROM assets WHERE id=?", (aid,))
         if not rows:
             raise ValueError("素材不存在")
@@ -556,7 +655,11 @@ class Catalog:
         item["collections"] = self.rows("""SELECT c.id,c.name FROM collections c JOIN collection_assets ca
             ON ca.collection_id=c.id WHERE ca.asset_id=? ORDER BY c.name""", (aid,))
         item["owners"] = self.rows("""SELECT a.id,a.name,r.relation FROM model_resources r JOIN assets a ON a.id=r.model_id
-            WHERE r.path=? AND a.status!='missing' AND a.excluded=0""", (item["path"],))
+            WHERE r.path=? AND a.status!='missing' AND a.excluded=0 AND a.archived=0""", (item["path"],))
+        item["history"] = self.rows("""SELECT old_path,action,created FROM relocation_history
+            WHERE EXISTS(SELECT 1 FROM json_each(replacements) WHERE value=?) ORDER BY created DESC""", (aid,))
+        if item["status"] == "missing" and not item["archived"]:
+            item["recovery_candidates"] = [self.public(a) for a in self.recovery_candidates(rows[0])]
         return item
 
     def copies(self, aid):
@@ -564,10 +667,10 @@ class Catalog:
         if not asset["hash"] or asset["status"] != "ready":
             return [asset]
         return [self.public(a) for a in self.rows("""SELECT * FROM assets WHERE hash=?
-            AND status='ready' AND excluded=0 ORDER BY path,id""", (asset["hash"],))]
+            AND status='ready' AND excluded=0 AND archived=0 ORDER BY path,id""", (asset["hash"],))]
 
     def asset_filters(self, filters):
-        clauses, params = ["a.excluded=0"], []
+        clauses, params = ["a.excluded=0", "a.archived=0"], []
         if filters.get("kind") in ("image", "model"):
             clauses.append("a.kind=?")
             params.append(filters["kind"])
@@ -596,10 +699,46 @@ class Catalog:
         if filters.get("collection_id"):
             clauses.append("EXISTS(SELECT 1 FROM collection_assets ca WHERE ca.asset_id=a.id AND ca.collection_id=?)")
             params.append(filters["collection_id"])
+        if filters.get("model_id"):
+            clauses.append("""EXISTS(SELECT 1 FROM model_resources r JOIN assets parent ON parent.id=r.model_id
+                WHERE r.path=a.path AND r.model_id=? AND parent.excluded=0 AND parent.archived=0
+                AND parent.status!='missing'""" + (" AND r.relation=?" if filters.get("relation") else "") + ")")
+            params.append(filters["model_id"])
+            if filters.get("relation"):
+                params.append(filters["relation"])
         if filters.get("min_width", 0):
             clauses.append("a.width>=?")
             params.append(filters["min_width"])
         return clauses, params
+
+    def resource_groups(self, filters):
+        clauses, params = self.asset_filters({**filters, "kind": "texture", "include_components": True})
+        source = """FROM assets a JOIN model_resources r ON r.path=a.path JOIN assets parent ON parent.id=r.model_id
+            WHERE parent.excluded=0 AND parent.archived=0 AND parent.status!='missing' AND """ + " AND ".join(clauses)
+        rows = self.rows("""SELECT parent.id,count(*) count,
+            sum(r.relation='bound') bound,sum(r.relation='auxiliary') auxiliary """
+            + source + " GROUP BY parent.id ORDER BY parent.name COLLATE NOCASE,parent.id", params)
+        return {"items": [{**self.get_asset(row["id"]), "resource_count": row["count"],
+                          "bound_count": row["bound"], "auxiliary_count": row["auxiliary"]} for row in rows],
+                "total": len(rows), "scope_total": sum(r["count"] for r in rows),
+                "resource_total": self.rows("SELECT count(DISTINCT a.id) count " + source, params)[0]["count"]}
+
+    def refresh_model_groups(self, fid):
+        """Rebuild ownership from cached metadata, without rendering or embedding again."""
+        models = self.rows("SELECT * FROM assets WHERE folder_id=? AND kind='model' AND status='ready' AND archived=0", (fid,))
+        counts = {}
+        for row in models:
+            parent = Path(row["path"]).parent
+            if parent not in counts:
+                counts[parent] = sum(p.suffix.lower() in MODEL_EXTENSIONS for p in parent.rglob("*") if p.is_file())
+            metadata = json.loads(row["model_data"] or "{}")
+            if not metadata:
+                continue
+            with self.lock, self.db:
+                self.db.execute("DELETE FROM model_resources WHERE model_id=?", (row["id"],))
+                self.db.executemany("INSERT OR IGNORE INTO model_resources VALUES(?,?,?)",
+                    [(row["id"], r["path"], r["relation"]) for r in metadata.get("resources", [])
+                     if r["path"] and r["kind"] == "texture" and (r["relation"] == "bound" or counts[parent] == 1)])
 
     def list_assets(self, filters, vector=None):
         clauses, params = self.asset_filters(filters)
@@ -655,11 +794,11 @@ class Catalog:
         return tags
 
     def bulk_update(self, ids, changes):
-        ids = list(dict.fromkeys(ids))
+        ids = list(dict.fromkeys(self.resolve_asset_id(aid) for aid in ids))
         if not ids or len(ids) > 5000:
             raise ValueError("每次请选择 1–5000 个文件")
         with self.lock, self.db:
-            rows = self.rows("SELECT id,tags FROM assets WHERE excluded=0 AND id IN (" +
+            rows = self.rows("SELECT id,tags FROM assets WHERE excluded=0 AND archived=0 AND id IN (" +
                              ",".join("?" for _ in ids) + ")", ids)
             if len(rows) != len(ids):
                 raise ValueError("部分素材已移除或被排除，请刷新后重新选择")
@@ -707,32 +846,36 @@ class Catalog:
             raise ValueError("集合不存在")
 
     def update_asset(self, aid, changes):
-        self.get_asset(aid)
-        if "tags" in changes:
-            tags = self.valid_tags(changes["tags"])
-            self.execute("UPDATE assets SET tags=? WHERE id=?", (json.dumps(tags, ensure_ascii=False), aid))
-        if "favorite" in changes:
-            self.execute("UPDATE assets SET favorite=? WHERE id=?", (int(changes["favorite"]), aid))
-        return self.get_asset(aid)
+        with self.lock, self.db:
+            aid = self.resolve_asset_id(aid)
+            if self.get_asset(aid)["archived"]:
+                raise ValueError("此旧位置已归档，请打开现存副本后整理")
+            if "tags" in changes:
+                tags = self.valid_tags(changes["tags"])
+                self.db.execute("UPDATE assets SET tags=? WHERE id=?", (json.dumps(tags, ensure_ascii=False), aid))
+            if "favorite" in changes:
+                self.db.execute("UPDATE assets SET favorite=? WHERE id=?", (int(changes["favorite"]), aid))
+            return self.get_asset(aid)
 
     def summary(self):
-        counts = {r["status"]: r["n"] for r in self.rows("SELECT status,count(*) n FROM assets WHERE excluded=0 GROUP BY status")}
+        counts = {r["status"]: r["n"] for r in self.rows("SELECT status,count(*) n FROM assets WHERE excluded=0 AND archived=0 GROUP BY status")}
         folders = self.rows("""SELECT f.*,count(a.id) AS count FROM folders f LEFT JOIN assets a
-            ON a.folder_id=f.id AND a.status!='missing' AND a.excluded=0 GROUP BY f.id ORDER BY f.name""")
+            ON a.folder_id=f.id AND a.status!='missing' AND a.excluded=0 AND a.archived=0 GROUP BY f.id ORDER BY f.name""")
         for folder in folders:
             folder["exclusions"] = json.loads(folder["exclusions"])
-            folder["excluded_count"] = self.rows("SELECT count(*) n FROM assets WHERE folder_id=? AND excluded=1", (folder["id"],))[0]["n"]
+            folder["excluded_count"] = self.rows("SELECT count(*) n FROM assets WHERE folder_id=? AND excluded=1 AND archived=0", (folder["id"],))[0]["n"]
         tags = self.rows("""SELECT j.value AS name,count(*) AS count FROM assets a,json_each(a.tags) j
-            WHERE a.status!='missing' AND a.excluded=0 GROUP BY j.value ORDER BY count DESC,j.value LIMIT 100""")
+            WHERE a.status!='missing' AND a.excluded=0 AND a.archived=0 GROUP BY j.value ORDER BY count DESC,j.value LIMIT 100""")
         collections = self.rows("""SELECT c.*,count(a.id) count FROM collections c
             LEFT JOIN collection_assets ca ON ca.collection_id=c.id
-            LEFT JOIN assets a ON a.id=ca.asset_id AND a.excluded=0 AND a.status!='missing'
+            LEFT JOIN assets a ON a.id=ca.asset_id AND a.excluded=0 AND a.archived=0 AND a.status!='missing'
             GROUP BY c.id ORDER BY c.name COLLATE NOCASE,c.id""")
         return {"counts": counts, "total": sum(v for k, v in counts.items() if k != "missing"),
-                "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND status!='missing'")[0]["n"],
-                "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
+                "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
+                "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.archived=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
                 "blender_available": bool(blender_executable()),
-                "favorites": self.rows("SELECT count(*) n FROM assets WHERE favorite=1 AND status!='missing' AND excluded=0")[0]["n"],
+                "favorites": self.rows("SELECT count(*) n FROM assets WHERE favorite=1 AND status!='missing' AND excluded=0 AND archived=0")[0]["n"],
+                "recovery": self.rows("""SELECT action,count(*) count FROM relocation_history GROUP BY action"""),
                 "collections": collections,
                 "folders": folders, "tags": tags, "model": self.inference.status,
                 "model_error": self.inference.error, "data_dir": str(self.root),
@@ -741,7 +884,7 @@ class Catalog:
     @staticmethod
     def owned_sql():
         return """EXISTS(SELECT 1 FROM model_resources r JOIN assets parent ON parent.id=r.model_id
-            WHERE r.path=a.path AND parent.excluded=0 AND parent.status!='missing')"""
+            WHERE r.path=a.path AND parent.excluded=0 AND parent.archived=0 AND parent.status!='missing')"""
 
     def close(self):
         self.stopping.set()

@@ -49,6 +49,10 @@ function App() {
   const [bulkCollection, setBulkCollection] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [modelGroup, setModelGroup] = useState<Asset | null>(null);
+  const [flatTextures, setFlatTextures] = useState(false);
+  const [resourceRelation, setResourceRelation] = useState('');
   const [collectionEditor, setCollectionEditor] = useState<Collection | 'new' | null>(null);
   const [exclusionEditor, setExclusionEditor] = useState<FolderType | null>(null);
   const [copies, setCopies] = useState<Asset[] | null>(null);
@@ -58,9 +62,10 @@ function App() {
   const [gridWidth, setGridWidth] = useState(800);
   const requestId = useRef(0);
   const searching = Boolean(query.text || query.image_path || query.asset_id);
+  const groupedResources = scope === 'textures' && !flatTextures && !modelGroup && !searching;
   const folder = summary?.folders.find(f => f.id === scope);
   const collection = summary?.collections.find(c => `collection:${c.id}` === scope);
-  const title = activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '模型附属贴图', images: '全部图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || '全部素材');
+  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '模型附属贴图', images: '全部图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || '全部素材'));
   const checkedAssets = result.items.filter(a => checked.includes(a.id));
   const checkedIds = [...new Set(checkedAssets.flatMap(a => a.member_ids || [a.id]))];
   const columns = Math.max(2, Math.floor((gridWidth - 48) / (cardSize + 14)));
@@ -114,7 +119,7 @@ function App() {
     return () => observer.disconnect();
   }, [connection, summary]);
   useEffect(() => { virtual.measure(); }, [cellSize, columns]);
-  useEffect(() => { setChecked([]); anchor.current = null; }, [scope, activeTag, query, filters, groupDuplicates, topK]);
+  useEffect(() => { setChecked([]); anchor.current = null; }, [scope, activeTag, query, filters, groupDuplicates, topK, modelGroup, resourceRelation, flatTextures]);
   useEffect(() => { setCopies(null); }, [selected?.id]);
 
   const countsKey = JSON.stringify(summary?.counts);
@@ -128,10 +133,11 @@ function App() {
       setBusy(true);
       const params = { ...filters, limit: searching ? topK : limit, top_k: topK,
         kind: scope === 'models' ? 'model' : scope === 'textures' ? 'texture' : scope === 'images' ? 'image' : '',
+        model_id: modelGroup?.id || '', relation: resourceRelation,
         group_duplicates: groupDuplicates, collection_id: collection?.id || '', tag: activeTag, favorite: scope === 'favorites',
         status: ['error', 'missing'].includes(scope) ? scope : '', folder_id: folder?.id || '' };
       try {
-        const data = await api<Result>(searching ? '/search' : '/assets/list', 'POST',
+        const data = await api<Result>(searching ? '/search' : groupedResources ? '/assets/resource-groups' : '/assets/list', 'POST',
           searching ? { ...query, filters: params } : params);
         if (current === requestId.current) {
           setResult(data);
@@ -141,7 +147,7 @@ function App() {
       finally { if (current === requestId.current) setBusy(false); }
     }, 180);
     return () => clearTimeout(timer);
-  }, [connection, scope, folder?.id, collection?.id, activeTag, filters, query, limit, topK, groupDuplicates, refresh, countsKey, scanKey]);
+  }, [connection, scope, folder?.id, collection?.id, activeTag, filters, query, limit, topK, groupDuplicates, refresh, countsKey, scanKey, modelGroup?.id, resourceRelation, groupedResources]);
   useEffect(() => {
     let stopped = false;
     if (selected) {
@@ -150,12 +156,14 @@ function App() {
       // A retried file leaves the failure list while queued, but its open detail
       // must still reflect completion or another failure.
       else api<Asset>(`/assets/${selected.id}`).then(value => {
-        if (!stopped) setSelected(old => old?.id === value.id ? value : old);
+        if (!stopped) setSelected(old => old?.id === selected.id ? value : old);
       }).catch(() => {});
     }
     return () => { stopped = true; };
   }, [result, selected?.id]);
-  const chooseScope = (value: string, tag = '') => { setScope(value); setActiveTag(tag); setSelected(null); setLimit(200); scrollRef.current?.scrollTo(0, 0); };
+  const resetResults = () => { setResult({ items: [], total: 0 }); setBusy(true); setChecked([]); setLimit(200); scrollRef.current?.scrollTo(0, 0); };
+  const chooseScope = (value: string, tag = '') => { if (value !== scope || tag !== activeTag || modelGroup) resetResults(); setScope(value); setActiveTag(tag); setSelected(null); setModelGroup(null); setResourceRelation(''); setMultiMode(false); };
+  const enterModelGroup = (asset: Asset) => { resetResults(); setModelGroup(asset); setSelected(asset); setResourceRelation(''); };
   const addFolder = () => run(async () => {
     const paths = await window.prism.chooseFolder();
     for (const path of paths) await api('/folders', 'POST', { path });
@@ -190,6 +198,22 @@ function App() {
     } finally { setRetryBusy(false); }
   });
   const running = summary?.jobs.find(j => ['queued', 'running'].includes(j.status));
+  const recover = () => run(async () => {
+    setRecoveryBusy(true);
+    try {
+      const data = await api<{ recovered: number; duplicates: number; ambiguous: number; missing: number }>('/assets/recover', 'POST');
+      notify(`恢复 ${data.recovered} 项，归档 ${data.duplicates} 项旧重复记录；${data.ambiguous} 项待选择，${data.missing} 项未找到`);
+      await loadSummary(); setRefresh(n => n + 1);
+    } finally { setRecoveryBusy(false); }
+  });
+  const reconnect = (old: Asset, candidate: Asset) => run(async () => {
+    setRecoveryBusy(true);
+    try {
+      setSelected(await api<Asset>(`/assets/${old.id}/reconnect`, 'POST', { target_id: candidate.id }));
+      notify('已恢复关联并合并标签、收藏和集合');
+      await loadSummary(); setRefresh(n => n + 1);
+    } finally { setRecoveryBusy(false); }
+  });
   const clearSearch = () => { setQuery({}); setDraft(''); setLimit(200); };
   const selectAsset = (asset: Asset, extend = false) => {
     setSelected(asset);
@@ -273,21 +297,32 @@ function App() {
       </div>
       <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}<span>{result.total.toLocaleString()} 项</span></h1></div>
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
-          <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
+          {!groupedResources && <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>}
           {collection && <button onClick={() => setCollectionEditor(collection)}>管理集合</button>}
           {scope === 'error' && !searching && <button disabled={retryBusy || !result.total} onClick={() => retry()}><RefreshCw size={15}/> 重试当前范围</button>}
+          {scope === 'missing' && <button disabled={recoveryBusy || Boolean(running)} onClick={recover}><RefreshCw size={15}/> 查找已移动文件</button>}
           <button className={filtersOpen ? 'selected-control' : ''} onClick={() => setFiltersOpen(v => !v)}><SlidersHorizontal size={15}/> 筛选</button>
           {folder && <button title="重新扫描此目录" onClick={() => scan(folder)}><RefreshCw size={16}/></button>}
         </div>
       </div>
       {searching && <div className="query-chip"><span>{query.text ? <Search size={13}/> : <ImageIcon size={13}/>} {query.text || query.label}</span><button onClick={clearSearch}><X size={13}/> 退出搜索</button><small>按余弦相似度排序；分数不代表正确概率</small></div>}
       <div className="result-controls">
-        <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>
+        {!groupedResources && <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>}
+        {scope === 'textures' && <>
+          {modelGroup && <button className="text-action" onClick={() => { resetResults(); setModelGroup(null); setSelected(null); setResourceRelation(''); setMultiMode(false); }}>返回模型分组</button>}
+          {!modelGroup && !searching && <label>展示方式<select aria-label="贴图展示方式" value={flatTextures ? 'flat' : 'groups'}
+            onChange={e => { resetResults(); setFlatTextures(e.target.value === 'flat'); setSelected(null); setMultiMode(false); }}><option value="groups">按模型分组</option><option value="flat">平铺全部贴图</option></select></label>}
+          {modelGroup && <label>资源类型<select aria-label="资源类型" value={resourceRelation} onChange={e => setResourceRelation(e.target.value)}>
+            <option value="">全部贴图</option><option value="bound">材质引用</option><option value="auxiliary">同目录辅助</option></select></label>}
+        </>}
         {searching && <label>候选上限<select aria-label="候选上限" value={topK} onChange={e => setTopK(+e.target.value)}>
           {[20, 50, 100, 200].map(k => <option key={k} value={k}>前 {k} 项</option>)}</select></label>}
-        <span aria-live="polite">{busy ? '更新中…' : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? ` · 返回 ${result.total} 个候选` : ''}`}</span>
+        <span aria-live="polite">{busy ? '更新中…' : groupedResources ? `${result.total} 个模型分组 · ${result.resource_total ?? 0} 张附属贴图（共享贴图可属于多个模型）`
+          : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? ` · 返回 ${result.total} 个候选` : ''}`}</span>
       </div>
-      {summary.models > 0 && <div className="component-note">模型按主资产展示，附属贴图可在模型详情或左侧“模型附属贴图”中查看。收藏、标签与集合保留独立贴图。</div>}
+      {summary.models > 0 && <div className="component-note">{groupedResources ? '点击模型分组查看材质引用、同目录辅助贴图和模型说明；原文件保持原位。'
+        : '模型附属贴图按模型自动分组；收藏、标签与虚拟集合仍可单独整理贴图。'}</div>}
+      {scope === 'missing' && <div className="component-note">失联表示旧路径不存在。扫描会按文件内容找回已移动的图片；多个候选且有整理信息时，请在详情选择新位置。</div>}
       {filtersOpen && <div className="filters">
         <input aria-label="文件名筛选" placeholder="文件名包含…" value={filters.name} onChange={e => { setFilters({ ...filters, name: e.target.value }); setLimit(200); }}/>
         <select aria-label="格式筛选" value={filters.ext} onChange={e => { setFilters({ ...filters, ext: e.target.value }); setLimit(200); }}>
@@ -329,13 +364,14 @@ function App() {
               {virtual.getVirtualItems().map(row => <div key={row.index} className="grid-row"
                 style={{ transform: `translateY(${row.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))` }}>
                 {result.items.slice(row.index * columns, (row.index + 1) * columns).map(asset => <div role="button" tabIndex={0}
-                  aria-label={`素材 ${asset.name}`} key={asset.id} className={`asset-card ${selected?.id === asset.id ? 'selected' : ''} ${checked.includes(asset.id) ? 'checked' : ''}`}
-                  onClick={e => { if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); } else setSelected(asset); }}
-                  onDoubleClick={() => { if (!multiMode) { setSelected(asset); setPreview(true); } }}
-                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (multiMode) selectAsset(asset, e.shiftKey); else setSelected(asset); } }}>
+                  aria-label={`${groupedResources ? '模型分组' : '素材'} ${asset.name}`} key={asset.id} className={`asset-card ${selected?.id === asset.id ? 'selected' : ''} ${checked.includes(asset.id) ? 'checked' : ''}`}
+                  onClick={e => { if (groupedResources) enterModelGroup(asset); else if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); } else setSelected(asset); }}
+                  onDoubleClick={() => { if (!multiMode && !groupedResources) { setSelected(asset); setPreview(true); } }}
+                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (groupedResources) enterModelGroup(asset); else if (multiMode) selectAsset(asset, e.shiftKey); else setSelected(asset); } }}>
                   <div className="asset-image" style={{ height: cellSize }}>
                     {asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : <ImageIcon size={35}/>}
                     <span className="format-badge">{asset.ext}</span>
+                    {groupedResources && <span className="copy-badge">{asset.resource_count} 张贴图</span>}
                     {multiMode && <input className="selection-check" type="checkbox" aria-label={`选择 ${asset.name}`} checked={checked.includes(asset.id)}
                       onClick={e => e.stopPropagation()} onChange={() => selectAsset(asset)}/>}
                     {(asset.copy_count || 0) > 1 && <span className="copy-badge">{asset.copy_count} 份相同文件</span>}
@@ -344,7 +380,7 @@ function App() {
                     {asset.score !== undefined && <span className="score-badge">{asset.score.toFixed(3)}</span>}
                     {asset.status !== 'ready' && <span className={`asset-state ${asset.status}`} title={asset.error || ''}>{labels[asset.status]}</span>}
                   </div>
-                  <div className="asset-caption"><strong>{asset.name}</strong><span>{asset.kind === 'model' ? `3D 模型${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{bytes(asset.size)}</span></div>
+                  <div className="asset-caption"><strong>{asset.name}</strong><span>{groupedResources ? `引用 ${asset.bound_count} · 辅助 ${asset.auxiliary_count}` : asset.kind === 'model' ? `3D 模型${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开分组' : bytes(asset.size)}</span></div>
                 </div>)}
               </div>)}
             </div>
@@ -356,12 +392,18 @@ function App() {
           <button className="inspector-preview" onClick={() => setPreview(true)}>{selected.thumbnail ? <img src={imageUrl(selected)} alt="选中素材预览"/> : <ImageIcon size={40}/>}<span><Maximize2 size={14}/> {selected.kind === 'model' ? '旋转查看 3D' : '大图预览'}</span></button>
           <h2>{selected.name}</h2><div className="detail-status"><i className={selected.status}/> {labels[selected.status]}</div>
           {selected.error && <p className="asset-error">{selected.error}</p>}
+          {selected.status === 'missing' && <div className="detail-section"><h3>恢复文件关联</h3>
+            <p className="organization-description">{selected.recovery_candidates?.length ? '以下文件内容与旧文件完全一致。选择一个位置接续原有标签、收藏和集合。' : '未找到内容一致的现存文件。请先检查原目录或磁盘，再重新扫描。'}</p>
+            <div className="copy-list">{selected.recovery_candidates?.map(candidate => <div key={candidate.id}><p>{candidate.path}</p>
+              <button disabled={recoveryBusy || Boolean(running)} onClick={() => reconnect(selected, candidate)}>使用此位置恢复</button></div>)}</div>
+          </div>}
           <div className="detail-actions"><button className="primary" disabled={selected.status === 'error'
             ? retryBusy || summary.jobs.some(j => j.folder_id === selected.folder_id && ['queued', 'running'].includes(j.status))
             : selected.status !== 'ready'} onClick={() => selected.status === 'error' ? retry([selected.id]) : similar(selected)}>
             {selected.status === 'error' ? <><RefreshCw size={15}/> 重试索引</> : <><Sparkles size={15}/> 查找相似</>}
           </button><button title={selected.favorite ? '取消收藏' : '收藏素材'} onClick={() => run(() => patch(selected, { favorite: !selected.favorite }))}><Heart size={17} fill={selected.favorite ? 'currentColor' : 'none'}/></button></div>
           {selected.kind === 'model' && <ModelDetails asset={selected} connection={connection}/>}
+          {selected.kind === 'model' && <button className="text-action" onClick={() => { chooseScope('textures'); enterModelGroup(selected); }}>查看此模型的贴图分组</button>}
           {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属模型</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => setSelected(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
           <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>
           <div className="detail-section"><h3>文件副本</h3>
@@ -381,6 +423,8 @@ function App() {
               <input aria-label="添加标签" placeholder="添加标签，回车保存" value={tagDraft} maxLength={64} onChange={e => setTagDraft(e.target.value)}/></form></div>
           <div className="detail-section"><h3>原始位置</h3><p className="file-path">{selected.path}</p><div className="path-actions"><button onClick={() => run(() => window.prism.reveal(selected.path))}><FolderOpen size={14}/> Finder</button><button onClick={() => run(async () => { await window.prism.copy(selected.path); notify('已复制原始路径'); })}><Copy size={14}/> 复制路径</button></div>
             <button className="open-original" onClick={() => run(() => window.prism.openFile(selected.id))}>使用默认应用打开 <ArrowRight size={13}/></button></div>
+          {Boolean(selected.history?.length) && <div className="detail-section"><h3>历史位置</h3>{selected.history?.map((entry, i) =>
+            <p className="file-path" key={i}>{entry.old_path}</p>)}<p className="organization-description">旧路径记录已保留，当前使用上方的现存文件。</p></div>}
         </aside>}
       </div>
       <footer className="footer"><span><HardDrive size={12}/> {summary.total} 个文件 · {summary.counts.ready || 0} 个已索引</span><span>{busy ? '正在搜索…' : searching ? '按视觉相关度排序' : '目录变动自动同步'} <i/> 空格预览</span></footer>

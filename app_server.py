@@ -125,6 +125,8 @@ class Filters(BaseModel):
     include_components: bool = False
     folder_id: str = ""
     collection_id: str = ""
+    model_id: str = ""
+    relation: Literal["", "bound", "auxiliary"] = ""
     status: str = ""
     favorite: bool = False
     ext: str = ""
@@ -151,6 +153,26 @@ def retry_assets(body: RetryRequest):
 @app.post("/assets/list")
 def assets(body: Filters):
     return app.state.catalog.list_assets(body.model_dump())
+
+
+@app.post("/assets/resource-groups")
+def resource_groups(body: Filters):
+    return app.state.catalog.resource_groups(body.model_dump())
+
+
+@app.post("/assets/recover")
+def recover_missing():
+    return app.state.catalog.recover_missing()
+
+
+class ReconnectRequest(BaseModel):
+    target_id: str = Field(min_length=1, max_length=64)
+
+
+@app.post("/assets/{aid}/reconnect")
+def reconnect_asset(aid: str, body: ReconnectRequest):
+    return app.state.catalog.reconnect_asset(aid, body.target_id)
+
 
 class BulkRequest(BaseModel):
     ids: list[str] = Field(min_length=1, max_length=5000)
