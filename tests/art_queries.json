@@ -1,0 +1,17 @@
+{
+  "purpose": "固定真实素材查询；expected_examples 仅为已查看图片的正例，不是穷尽的相关性标注。",
+  "queries": [
+    {"text": "森林里的石头神殿", "expected_examples": ["fN7HnzWaI3"]},
+    {"text": "中世纪小镇街道", "expected_examples": ["27rUcsiPkf"]},
+    {"text": "未来都市霓虹夜景", "expected_examples": ["Hun0gpmFIi"]},
+    {"text": "老旧的电表", "expected_examples": ["SJm7VqXxy8", "1tYyO53ALV"]},
+    {"text": "工业配电柜", "expected_examples": ["MNWseCh5L0", "bUQGnF469u"]},
+    {"text": "粉色扭蛋机", "expected_examples": ["pUpFRDEem5"]},
+    {"text": "彩色掉漆木板材质", "expected_examples": ["I3vjHtl3jU"]},
+    {"text": "深色木质墙板", "expected_examples": ["6AJHYnyEup"]},
+    {"text": "格纹和编织布料材质", "expected_examples": ["LIIm5WcGMa"]},
+    {"text": "深色科幻控制台界面", "expected_examples": ["7SMZGRvz6b"]},
+    {"text": "蓝色金色装饰边框", "expected_examples": ["HJKnjzTxtP"]},
+    {"text": "游戏技能图标合集", "expected_examples": ["MKN0tecyO4", "DPL726XlpT"]}
+  ]
+}

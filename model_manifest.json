@@ -1,0 +1,12 @@
+{
+  "base_model": "google/embeddinggemma-2",
+  "download_repo": "mlx-community/embeddinggemma-2-bf16",
+  "revision": "1a4ffddb7905d3f63486748deabe091a01fb6201",
+  "precision": "bfloat16",
+  "license": "Apache-2.0",
+  "runtime": "MLX on Apple Silicon",
+  "enabled_modalities": [
+    "text",
+    "image"
+  ]
+}

@@ -1,0 +1,689 @@
+"""Persistent, linked-file catalog. Originals are never moved or modified."""
+from __future__ import annotations
+
+import concurrent.futures
+import hashlib
+import itertools
+import json
+import os
+from pathlib import Path
+import queue
+import shutil
+import sqlite3
+import threading
+import time
+import uuid
+
+import numpy as np
+from PIL import Image, ImageOps
+from model_assets import MODEL_EXTENSIONS, IMAGE_EXTENSIONS, dependency_stamp, prepare_model, blender_executable
+
+EXTENSIONS = IMAGE_EXTENSIONS | MODEL_EXTENSIONS
+PROFILE = "embeddinggemma2:1a4ffddb7905d3f63486748deabe091a01fb6201:mlx0.7.9:768:exif-rgb-2048:v1"
+
+
+class Inference:
+    """One model, one inference thread; interactive queries precede indexing."""
+
+    def __init__(self):
+        self.queue = queue.PriorityQueue()
+        self.sequence = itertools.count()
+        self.status = "unloaded"
+        self.error = None
+        self.thread = threading.Thread(target=self.run, daemon=True, name="inference")
+        self.thread.start()
+
+    def submit(self, kind, value, priority=0):
+        future = concurrent.futures.Future()
+        self.queue.put((priority, next(self.sequence), future, kind, value))
+        return future
+
+    def run(self):
+        model = None
+        while True:
+            _, _, future, kind, value = self.queue.get()
+            if not future.set_running_or_notify_cancel():
+                continue
+            try:
+                if model is None:
+                    self.status = "loading"
+                    from embed import Embedder
+                    model = Embedder()
+                    self.status, self.error = "ready", None
+                if kind == "text":
+                    vector = model.text([value])[0]
+                else:
+                    with Image.open(value) as image:
+                        if image.width * image.height > 40_000_000:
+                            raise ValueError("图片超过 4000 万像素")
+                        vector = model.image(image)[0]
+                future.set_result(vector)
+            except Exception as exc:
+                if model is None:
+                    self.status, self.error = "error", str(exc)
+                future.set_exception(exc)
+            finally:
+                self.queue.task_done()
+
+
+class Catalog:
+    def __init__(self, root: Path, inference=None, watch=True):
+        self.root = root.resolve()
+        self.root.mkdir(parents=True, exist_ok=True)
+        self.thumbs = self.root / "thumbnails"
+        self.thumbs.mkdir(exist_ok=True)
+        self.models = self.root / "models"
+        self.models.mkdir(exist_ok=True)
+        self.db = sqlite3.connect(self.root / "catalog.sqlite3", check_same_thread=False)
+        self.db.row_factory = sqlite3.Row
+        self.lock = threading.RLock()
+        self.db.executescript("""
+            PRAGMA journal_mode=WAL;
+            PRAGMA foreign_keys=ON;
+            CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
+            CREATE TABLE IF NOT EXISTS folders(
+                id TEXT PRIMARY KEY,path TEXT UNIQUE NOT NULL,name TEXT,
+                status TEXT DEFAULT 'online',scanned REAL);
+            CREATE TABLE IF NOT EXISTS assets(
+                id TEXT PRIMARY KEY,folder_id TEXT REFERENCES folders(id) ON DELETE CASCADE,
+                path TEXT UNIQUE,name TEXT,ext TEXT,size INTEGER,mtime INTEGER,
+                width INTEGER DEFAULT 0,height INTEGER DEFAULT 0,hash TEXT,
+                thumbnail TEXT,vector BLOB,tags TEXT DEFAULT '[]',
+                favorite INTEGER DEFAULT 0,status TEXT DEFAULT 'pending',error TEXT,
+                added REAL,updated REAL);
+            CREATE INDEX IF NOT EXISTS asset_folder ON assets(folder_id);
+            CREATE INDEX IF NOT EXISTS asset_status ON assets(status);
+            CREATE TABLE IF NOT EXISTS jobs(
+                id TEXT PRIMARY KEY,folder_id TEXT REFERENCES folders(id) ON DELETE CASCADE,
+                name TEXT,status TEXT,total INTEGER DEFAULT 0,done INTEGER DEFAULT 0,
+                failed INTEGER DEFAULT 0,error TEXT,created REAL,finished REAL);
+            CREATE TABLE IF NOT EXISTS collections(
+                id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,created REAL);
+            CREATE TABLE IF NOT EXISTS collection_assets(
+                collection_id TEXT REFERENCES collections(id) ON DELETE CASCADE,
+                asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
+                PRIMARY KEY(collection_id,asset_id));
+            CREATE INDEX IF NOT EXISTS membership_asset ON collection_assets(asset_id);
+            CREATE TABLE IF NOT EXISTS model_resources(
+                model_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
+                path TEXT NOT NULL,relation TEXT NOT NULL,
+                PRIMARY KEY(model_id,path));
+            CREATE INDEX IF NOT EXISTS resource_path ON model_resources(path);
+        """)
+        # Additive migration: preserve IDs, vectors, tags, favorites and paths.
+        for table, column, declaration in [
+            ("folders", "exclusions", "TEXT NOT NULL DEFAULT '[]'"),
+            ("assets", "excluded", "INTEGER NOT NULL DEFAULT 0"),
+            ("assets", "kind", "TEXT NOT NULL DEFAULT 'image'"),
+            ("assets", "model_data", "TEXT"),
+            ("assets", "dependency_stamp", "TEXT"),
+        ]:
+            if column not in {r["name"] for r in self.rows(f"PRAGMA table_info({table})")}:
+                self.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
+        self.execute("CREATE INDEX IF NOT EXISTS asset_hash ON assets(hash)")
+        old = self.rows("SELECT value FROM meta WHERE key='profile'")
+        if old and old[0]["value"] != PROFILE:
+            self.execute("UPDATE assets SET vector=NULL,status='pending'")
+        self.execute("INSERT OR REPLACE INTO meta VALUES('profile',?)", (PROFILE,))
+        self.execute("UPDATE jobs SET status='interrupted',error='上次退出时中断，已安排恢复' "
+                     "WHERE status IN ('queued','running')")
+        self.inference = inference or Inference()
+        self.scan_queue = queue.Queue()
+        self.active = set()
+        self.rescan_again = set()
+        self.stopping = threading.Event()
+        self.observer = None
+        self.worker = threading.Thread(target=self.scan_loop, daemon=True, name="scanner")
+        self.worker.start()
+        if watch:
+            from watchdog.observers import Observer
+            from watchdog.events import FileSystemEventHandler
+
+            owner = self
+
+            class Handler(FileSystemEventHandler):
+                def on_any_event(self, event):
+                    if event.event_type in {"opened", "closed_no_write"}:
+                        return
+                    owner.dirty.set()
+
+            self.dirty = threading.Event()
+            self.observer = Observer()
+            self.handler = Handler()
+            for folder in self.rows("SELECT * FROM folders"):
+                self.watch_folder(folder["path"])
+            self.observer.start()
+            threading.Thread(target=self.watch_loop, daemon=True, name="watcher").start()
+        for folder in self.rows("SELECT id FROM folders"):
+            self.rescan(folder["id"])
+
+    def execute(self, sql, params=()):
+        with self.lock:
+            cursor = self.db.execute(sql, params)
+            self.db.commit()
+            return cursor.rowcount
+
+    def rows(self, sql, params=()):
+        with self.lock:
+            return [dict(r) for r in self.db.execute(sql, params).fetchall()]
+
+    def watch_folder(self, path):
+        if self.observer and Path(path).is_dir():
+            try:
+                self.observer.schedule(self.handler, path, recursive=True)
+            except OSError:
+                pass  # Periodic reconciliation also covers temporarily offline volumes.
+
+    def watch_loop(self):
+        while not self.stopping.wait(2):
+            changed = self.dirty.is_set()
+            self.dirty.clear()
+            if changed:
+                self.stopping.wait(1)  # Let image exports settle before scanning.
+            if changed or time.monotonic() - getattr(self, "last_check", 0) > 60:
+                self.last_check = time.monotonic()
+                for folder in self.rows("SELECT id FROM folders"):
+                    self.rescan(folder["id"], automatic=True)
+
+    def add_folder(self, value):
+        path = Path(value).expanduser().resolve(strict=True)
+        if not path.is_dir():
+            raise ValueError("请选择素材文件夹")
+        if path == self.root or self.root in path.parents or path in self.root.parents:
+            raise ValueError("请选择独立的素材目录，避免将应用数据目录纳入扫描")
+        for folder in self.rows("SELECT * FROM folders"):
+            other = Path(folder["path"])
+            if other == path:
+                self.rescan(folder["id"])
+                return folder
+            if other in path.parents or path in other.parents:
+                raise ValueError("此目录与已关联目录重叠，请选择不重叠的文件夹")
+        fid = uuid.uuid4().hex
+        self.execute("INSERT INTO folders(id,path,name) VALUES(?,?,?)", (fid, str(path), path.name))
+        self.watch_folder(str(path))
+        self.rescan(fid)
+        return self.rows("SELECT * FROM folders WHERE id=?", (fid,))[0]
+
+    def remove_folder(self, fid):
+        with self.lock:
+            if fid in self.active:
+                raise ValueError("目录正在索引，请等待任务完成后解除关联")
+            thumbs = self.rows("SELECT id,thumbnail FROM assets WHERE folder_id=?", (fid,))
+            self.execute("DELETE FROM folders WHERE id=?", (fid,))
+            for row in thumbs:
+                if row["thumbnail"]:
+                    (self.thumbs / row["thumbnail"]).unlink(missing_ok=True)
+                shutil.rmtree(self.models / row["id"], ignore_errors=True)
+
+    @staticmethod
+    def excluded_path(path, base, rules):
+        directories = Path(path).relative_to(base).parts[:-1]
+        for rule in rules:
+            parts = Path(rule).parts
+            if len(parts) == 1 and parts[0] in directories:
+                return True
+            if len(parts) > 1 and directories[:len(parts)] == parts:
+                return True
+        return False
+
+    @staticmethod
+    def normalize_exclusions(rules):
+        if len(rules) > 100:
+            raise ValueError("最多设置 100 条目录排除规则")
+        result = []
+        for rule in rules:
+            value = rule.strip().rstrip("/")
+            path = Path(value)
+            if (not value or value == "." or path.is_absolute() or ".." in path.parts
+                    or any(c in value for c in "*?[]\\\0") or len(value) > 1000):
+                raise ValueError("请输入相对目录路径，不支持 ..、通配符或绝对路径")
+            normalized = str(path)
+            if normalized not in result:
+                result.append(normalized)
+        return result
+
+    def reconcile_exclusions(self, fid, rules, base):
+        changes = [(int(self.excluded_path(a["path"], base, rules)), a["id"])
+                   for a in self.rows("SELECT id,path FROM assets WHERE folder_id=?", (fid,))]
+        self.db.executemany("UPDATE assets SET excluded=? WHERE id=?", changes)
+
+    def folder_exclusions(self, fid, rules, preview=False):
+        rules = self.normalize_exclusions(rules)
+        with self.lock:
+            folders = self.rows("SELECT * FROM folders WHERE id=?", (fid,))
+            if not folders:
+                raise ValueError("目录不存在")
+            folder = folders[0]
+            assets = self.rows("SELECT path,excluded FROM assets WHERE folder_id=?", (fid,))
+            flags = [self.excluded_path(a["path"], folder["path"], rules) for a in assets]
+            result = {"rules": rules, "excluded_files": sum(flags),
+                      "newly_excluded": sum(flag and not a["excluded"] for a, flag in zip(assets, flags)),
+                      "restored_files": sum(not flag and a["excluded"] for a, flag in zip(assets, flags)),
+                      "indexed_files_checked": len(assets)}
+            if preview:
+                return result
+            with self.db:
+                self.db.execute("UPDATE folders SET exclusions=? WHERE id=?",
+                                (json.dumps(rules, ensure_ascii=False), fid))
+                self.reconcile_exclusions(fid, rules, folder["path"])
+            if fid in self.active:
+                self.rescan_again.add(fid)
+            else:
+                self.rescan(fid)
+            return result
+
+    def rescan(self, fid, retry=False, automatic=False):
+        with self.lock:
+            folders = self.rows("SELECT * FROM folders WHERE id=?", (fid,))
+            if not folders:
+                raise ValueError("目录不存在")
+            if fid in self.active:
+                return {"status": "running"}
+            jid = uuid.uuid4().hex
+            self.active.add(fid)
+            self.execute("INSERT INTO jobs(id,folder_id,name,status,created) VALUES(?,?,?,'queued',?)",
+                         (jid, fid, folders[0]["name"], time.time()))
+            self.scan_queue.put((jid, folders[0], retry, automatic))
+            return {"id": jid, "status": "queued"}
+
+    def scan_loop(self):
+        while not self.stopping.is_set():
+            try:
+                jid, folder, retry, automatic = self.scan_queue.get(timeout=.5)
+            except queue.Empty:
+                continue
+            try:
+                self.scan(jid, folder, retry, automatic)
+            except Exception as exc:
+                self.execute("UPDATE jobs SET status='failed',error=?,finished=? WHERE id=?",
+                             (str(exc), time.time(), jid))
+            finally:
+                with self.lock:
+                    self.active.discard(folder["id"])
+                    if folder["id"] in self.rescan_again:
+                        self.rescan_again.discard(folder["id"])
+                        self.rescan(folder["id"])
+                self.scan_queue.task_done()
+
+    def scan(self, jid, folder, retry, automatic):
+        fid, base = folder["id"], Path(folder["path"])
+        self.execute("UPDATE jobs SET status='running' WHERE id=?", (jid,))
+        if not base.is_dir():
+            self.execute("UPDATE folders SET status='offline' WHERE id=?", (fid,))
+            raise ValueError("目录不可访问，请重新连接磁盘后重试")
+        existing = {a["path"]: a for a in self.rows("SELECT * FROM assets WHERE folder_id=?", (fid,))}
+        rules = json.loads(folder["exclusions"])
+        seen, pending = set(), []
+        walk_errors = []
+        for parent, dirs, files in os.walk(base, followlinks=False, onerror=walk_errors.append):
+            dirs[:] = [d for d in dirs if not d.startswith(".") and not (Path(parent) / d).is_symlink()
+                       and not self.excluded_path(Path(parent) / d / "_", base, rules)]
+            for name in files:
+                path = Path(parent) / name
+                if name.startswith(".") or path.suffix.lower() not in EXTENSIONS or path.is_symlink():
+                    continue
+                key = str(path)
+                seen.add(key)
+                try:
+                    stat = path.stat()
+                except OSError as exc:
+                    walk_errors.append(exc)
+                    continue
+                old = existing.get(key)
+                kind = "model" if path.suffix.lower() in MODEL_EXTENSIONS else "image"
+                stamp = (dependency_stamp(path, json.loads(old["model_data"]) if old and old["model_data"] else None)
+                         if kind == "model" else None)
+                if (old and old["mtime"] == stat.st_mtime_ns and old["size"] == stat.st_size
+                        and (kind != "model" or old["dependency_stamp"] == stamp)
+                        and old["status"] != "pending" and old["status"] != "missing"
+                        and not (retry and old["status"] == "error")):
+                    continue
+                aid = old["id"] if old else uuid.uuid4().hex
+                now = time.time()
+                with self.lock:
+                    current_rules = json.loads(self.rows("SELECT exclusions FROM folders WHERE id=?", (fid,))[0]["exclusions"])
+                    excluded = int(self.excluded_path(path, base, current_rules))
+                    self.execute("""INSERT INTO assets(id,folder_id,path,name,ext,size,mtime,added,updated,excluded,kind,dependency_stamp)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET
+                        size=excluded.size,mtime=excluded.mtime,status='pending',vector=NULL,error=NULL,
+                        hash=NULL,updated=excluded.updated,excluded=excluded.excluded,
+                        kind=excluded.kind,dependency_stamp=excluded.dependency_stamp""",
+                                 (aid, fid, key, name, path.suffix[1:].lower(), stat.st_size,
+                                  stat.st_mtime_ns, now, now, excluded, kind, stamp))
+                pending.append((aid, path, stat.st_mtime_ns, stat.st_size))
+        # Re-read rules because they can change while a scan is running.
+        with self.lock, self.db:
+            current_rules = json.loads(self.rows("SELECT exclusions FROM folders WHERE id=?", (fid,))[0]["exclusions"])
+            self.reconcile_exclusions(fid, current_rules, base)
+        if walk_errors:
+            self.execute("UPDATE folders SET status='error' WHERE id=?", (fid,))
+        else:
+            for key, old in existing.items():
+                if key not in seen and not self.excluded_path(key, base, rules) and not self.excluded_path(key, base, current_rules):
+                    self.execute("UPDATE assets SET status='missing',vector=NULL WHERE id=?", (old["id"],))
+            self.execute("UPDATE folders SET status='online',scanned=? WHERE id=?", (time.time(), fid))
+        if automatic and not pending and not walk_errors:
+            self.execute("DELETE FROM jobs WHERE id=?", (jid,))
+            return
+        self.execute("UPDATE jobs SET total=? WHERE id=?", (len(pending), jid))
+        failed = 0
+        # Build parent cards before their dependent texture thumbnails.
+        pending.sort(key=lambda item: item[1].suffix.lower() not in MODEL_EXTENSIONS)
+        for i, (aid, path, mtime, size) in enumerate(pending):
+            if self.stopping.is_set():
+                return
+            try:
+                if not self.rows("SELECT excluded FROM assets WHERE id=?", (aid,))[0]["excluded"]:
+                    self.index_one(aid, path, mtime, size)
+            except Exception as exc:
+                failed += 1
+                self.execute("UPDATE assets SET status='error',vector=NULL,error=? WHERE id=?",
+                             (str(exc)[:1000], aid))
+            self.execute("UPDATE jobs SET done=?,failed=? WHERE id=?", (i + 1, failed, jid))
+        self.execute("UPDATE jobs SET status=?,error=?,finished=? WHERE id=?",
+                     ("failed" if walk_errors else "partial" if failed else "completed",
+                      "; ".join(map(str, walk_errors))[:1000] if walk_errors else None, time.time(), jid))
+        self.execute("""DELETE FROM jobs WHERE id NOT IN
+            (SELECT id FROM jobs ORDER BY created DESC LIMIT 100) AND status NOT IN ('queued','running')""")
+
+    def index_one(self, aid, path, mtime, size):
+        if path.suffix.lower() in MODEL_EXTENSIONS:
+            return self.index_model(aid, path)
+        if size > 100 * 1024**2:
+            raise ValueError("首版支持 100 MB 以内的图片")
+        with Image.open(path) as image:
+            if image.width * image.height > 40_000_000:
+                raise ValueError("图片超过 4000 万像素")
+            image = ImageOps.exif_transpose(image)
+            width, height = image.size
+            image.thumbnail((640, 640))
+            image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+            thumbnail = f"{aid}-{mtime}.webp"
+            temp = self.thumbs / f"{aid}.tmp"
+            image.save(temp, "WEBP", quality=82)
+            temp.replace(self.thumbs / thumbnail)
+        digest = hashlib.sha256()
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        self.execute("UPDATE assets SET width=?,height=?,thumbnail=? WHERE id=?",
+                     (width, height, thumbnail, aid))
+        vector = self.inference.submit("image", str(path), priority=10).result(timeout=300)
+        current = path.stat()
+        if current.st_mtime_ns != mtime or current.st_size != size:
+            # Do not publish an embedding computed from a moving source.
+            self.execute("UPDATE assets SET status='pending',vector=NULL WHERE id=?", (aid,))
+            return
+        self.execute("UPDATE assets SET hash=?,vector=?,status='ready',error=NULL WHERE id=?",
+                     (digest.hexdigest(), vector.astype(np.float32).tobytes(), aid))
+        for old in self.thumbs.glob(f"{aid}-*.webp"):
+            if old.name != thumbnail:
+                old.unlink(missing_ok=True)
+
+    def index_model(self, aid, path):
+        before = dependency_stamp(path, json.loads(self.rows("SELECT model_data FROM assets WHERE id=?", (aid,))[0]["model_data"] or "{}"))
+        generation = uuid.uuid4().hex
+        output = self.models / aid / generation
+        try:
+            metadata = prepare_model(path, output)
+            vectors = [self.inference.submit("image", str(output / f"view-{i}.png"), priority=10).result(timeout=300)
+                       for i in range(2)]
+            vector = np.mean(vectors, axis=0).astype(np.float32)
+            vector /= max(float(np.linalg.norm(vector)), 1e-8)
+            # Ensure source and locally discoverable dependencies did not move during conversion.
+            old_metadata = json.loads(self.rows("SELECT model_data FROM assets WHERE id=?", (aid,))[0]["model_data"] or "{}")
+            if before != dependency_stamp(path, old_metadata):
+                self.execute("UPDATE assets SET status='pending',vector=NULL WHERE id=?", (aid,))
+                shutil.rmtree(output, ignore_errors=True)
+                return
+            thumbnail = f"{aid}-{generation}.webp"
+            with Image.open(output / "view-0.png") as image:
+                image.save(self.thumbs / thumbnail, "WEBP", quality=88)
+            metadata["cache"] = generation
+            metadata["bound_textures"] = sum(r["kind"] == "texture" and r["relation"] == "bound" for r in metadata["resources"])
+            metadata["auxiliary_files"] = sum(r["relation"] == "auxiliary" for r in metadata["resources"])
+            metadata["missing_resources"] = sum(not r["exists"] for r in metadata["resources"])
+            folder = self.rows("SELECT f.path FROM folders f JOIN assets a ON a.folder_id=f.id WHERE a.id=?", (aid,))[0]
+            # Auxiliary grouping is safe only for a dedicated, single-model subfolder.
+            dedicated = path.parent != Path(folder["path"]) and sum(
+                p.suffix.lower() in MODEL_EXTENSIONS for p in path.parent.rglob("*") if p.is_file()) == 1
+            with self.lock, self.db:
+                self.db.execute("DELETE FROM model_resources WHERE model_id=?", (aid,))
+                self.db.executemany("INSERT OR IGNORE INTO model_resources VALUES(?,?,?)",
+                    [(aid, r["path"], r["relation"]) for r in metadata["resources"]
+                     if r["path"] and r["kind"] == "texture" and (r["relation"] == "bound" or dedicated)])
+                self.db.execute("""UPDATE assets SET model_data=?,dependency_stamp=?,thumbnail=?,hash=?,vector=?,
+                    width=0,height=0,status='ready',error=NULL WHERE id=?""",
+                    (json.dumps(metadata, ensure_ascii=False), metadata["dependency_stamp"], thumbnail,
+                     metadata["content_hash"], vector.tobytes(), aid))
+            for other in output.parent.iterdir():
+                if other != output:
+                    shutil.rmtree(other, ignore_errors=True)
+            for old in self.thumbs.glob(f"{aid}-*.webp"):
+                if old.name != thumbnail:
+                    old.unlink(missing_ok=True)
+        except Exception:
+            shutil.rmtree(output, ignore_errors=True)
+            raise
+
+    def model_file(self, aid, filename):
+        asset = self.get_asset(aid)
+        if asset["kind"] != "model" or not asset.get("model") or asset["status"] not in ("ready", "error"):
+            raise ValueError("模型预览尚未生成")
+        path = self.models / aid / asset["model"]["cache"] / filename
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        return path
+
+    def similar_vector(self, aid):
+        row = self.rows("SELECT * FROM assets WHERE id=?", (aid,))
+        if not row or row[0]["status"] != "ready" or row[0]["vector"] is None:
+            raise ValueError("请等待素材索引完成后再查找相似")
+        return np.frombuffer(row[0]["vector"], dtype=np.float32)
+
+    @staticmethod
+    def public(asset):
+        item = dict(asset)
+        item.pop("vector", None)
+        item["model"] = json.loads(item.pop("model_data") or "null")
+        item["tags"] = json.loads(item["tags"])
+        item["favorite"] = bool(item["favorite"])
+        return item
+
+    def get_asset(self, aid):
+        rows = self.rows("SELECT * FROM assets WHERE id=?", (aid,))
+        if not rows:
+            raise ValueError("素材不存在")
+        item = self.public(rows[0])
+        item["collections"] = self.rows("""SELECT c.id,c.name FROM collections c JOIN collection_assets ca
+            ON ca.collection_id=c.id WHERE ca.asset_id=? ORDER BY c.name""", (aid,))
+        item["owners"] = self.rows("""SELECT a.id,a.name,r.relation FROM model_resources r JOIN assets a ON a.id=r.model_id
+            WHERE r.path=? AND a.status!='missing' AND a.excluded=0""", (item["path"],))
+        return item
+
+    def copies(self, aid):
+        asset = self.get_asset(aid)
+        if not asset["hash"] or asset["status"] != "ready":
+            return [asset]
+        return [self.public(a) for a in self.rows("""SELECT * FROM assets WHERE hash=?
+            AND status='ready' AND excluded=0 ORDER BY path,id""", (asset["hash"],))]
+
+    def list_assets(self, filters, vector=None):
+        clauses, params = ["a.excluded=0"], []
+        if filters.get("kind") in ("image", "model"):
+            clauses.append("a.kind=?")
+            params.append(filters["kind"])
+        if filters.get("kind") == "texture":
+            clauses.append("a.kind='image' AND " + self.owned_sql())
+        elif not filters.get("include_components") and not any(filters.get(k) for k in ("favorite", "collection_id", "tag", "status")) and filters.get("kind") != "image":
+            clauses.append("NOT " + self.owned_sql())
+        for key in ("folder_id", "status"):
+            if filters.get(key):
+                clauses.append(f"a.{key}=?")
+                params.append(filters[key])
+        if not filters.get("status"):
+            clauses.append("a.status!='missing'")
+        if filters.get("favorite"):
+            clauses.append("a.favorite=1")
+        if filters.get("ext"):
+            exts = ("jpg", "jpeg") if filters["ext"] == "jpg" else (filters["ext"],)
+            clauses.append("a.ext IN (" + ",".join("?" for _ in exts) + ")")
+            params.extend(exts)
+        if filters.get("name"):
+            clauses.append("instr(lower(a.name),lower(?))>0")
+            params.append(filters["name"])
+        if filters.get("tag"):
+            clauses.append("EXISTS(SELECT 1 FROM json_each(a.tags) WHERE value=?)")
+            params.append(filters["tag"])
+        if filters.get("collection_id"):
+            clauses.append("EXISTS(SELECT 1 FROM collection_assets ca WHERE ca.asset_id=a.id AND ca.collection_id=?)")
+            params.append(filters["collection_id"])
+        if filters.get("min_width", 0):
+            clauses.append("a.width>=?")
+            params.append(filters["min_width"])
+        if vector is not None:
+            clauses.append("a.status='ready' AND a.vector IS NOT NULL")
+        where = " AND ".join(clauses)
+        offset, limit = max(0, int(filters.get("offset", 0))), min(1000, max(1, int(filters.get("limit", 200))))
+        order = {"name": "name COLLATE NOCASE ASC", "oldest": "added ASC",
+                 "newest": "added DESC"}.get(filters.get("sort"), "added DESC")
+        group_key = ("CASE WHEN a.status='ready' AND a.hash IS NOT NULL THEN 'hash:'||a.hash ELSE 'id:'||a.id END"
+                     if filters.get("group_duplicates", True) else "'id:'||a.id")
+        cte = f"""WITH eligible AS (SELECT a.*,{group_key} AS group_key FROM assets a WHERE {where}),
+            ranked AS (SELECT *,ROW_NUMBER() OVER (PARTITION BY group_key ORDER BY {order},id) rn,
+                COUNT(*) OVER (PARTITION BY group_key) copy_count FROM eligible)"""
+        with self.lock:
+            counts = self.rows(cte + " SELECT count(*) scope_total,count(DISTINCT group_key) unique_total FROM eligible", params)[0]
+            total = counts["unique_total"]
+            if vector is not None:
+                total = min(total, int(filters.get("top_k", 50)))
+                limit = min(limit, max(0, total - offset))
+                # Score one representative per exact-content group, retaining only Top-K.
+                top = []
+                cursor = self.db.execute(cte + " SELECT id,vector,group_key,copy_count FROM ranked WHERE rn=1", params)
+                while batch := cursor.fetchmany(512):
+                    matrix = np.stack([np.frombuffer(r["vector"], dtype=np.float32) for r in batch])
+                    scores = matrix @ vector
+                    top.extend((float(score), row["id"], row["group_key"], row["copy_count"])
+                               for score, row in zip(scores, batch))
+                    top = sorted(top, key=lambda r: (-r[0], r[1]))[:total]
+                chosen = [{"id": aid, "group_key": group, "copy_count": count, "score": round(score, 4)}
+                          for score, aid, group, count in top[offset:offset + limit]]
+            else:
+                chosen = self.rows(cte + f" SELECT id,group_key,copy_count FROM ranked WHERE rn=1 ORDER BY {order},id LIMIT ? OFFSET ?",
+                                   (*params, limit, offset))
+            items = []
+            for row in chosen:
+                item = self.get_asset(row["id"])
+                item["copy_count"] = row["copy_count"]
+                item["member_ids"] = [a["id"] for a in self.rows(
+                    cte + " SELECT id FROM eligible WHERE group_key=? ORDER BY id", (*params, row["group_key"]))]
+                if "score" in row:
+                    item["score"] = row["score"]
+                items.append(item)
+        return {"items": items, "total": total, "offset": offset, "limit": limit, **counts,
+                "collapsed_count": counts["scope_total"] - counts["unique_total"],
+                "top_k": int(filters.get("top_k", 50)) if vector is not None else None}
+
+    @staticmethod
+    def valid_tags(tags):
+        tags = list(dict.fromkeys(t.strip() for t in tags if t.strip()))
+        if len(tags) > 30 or any(len(t) > 64 for t in tags):
+            raise ValueError("最多 30 个标签，每个不超过 64 字")
+        return tags
+
+    def bulk_update(self, ids, changes):
+        ids = list(dict.fromkeys(ids))
+        if not ids or len(ids) > 5000:
+            raise ValueError("每次请选择 1–5000 个文件")
+        with self.lock, self.db:
+            rows = self.rows("SELECT id,tags FROM assets WHERE excluded=0 AND id IN (" +
+                             ",".join("?" for _ in ids) + ")", ids)
+            if len(rows) != len(ids):
+                raise ValueError("部分素材已移除或被排除，请刷新后重新选择")
+            cid = changes.get("collection_id")
+            if cid and not self.rows("SELECT id FROM collections WHERE id=?", (cid,)):
+                raise ValueError("集合不存在")
+            updates = []
+            for row in rows:
+                tags = json.loads(row["tags"])
+                removed = {t.strip() for t in changes.get("remove_tags", [])}
+                tags = self.valid_tags([t for t in tags if t not in removed] + changes.get("add_tags", []))
+                updates.append((json.dumps(tags, ensure_ascii=False), row["id"]))
+            self.db.executemany("UPDATE assets SET tags=? WHERE id=?", updates)
+            if changes.get("favorite") is not None:
+                self.db.executemany("UPDATE assets SET favorite=? WHERE id=?",
+                                    [(int(changes["favorite"]), aid) for aid in ids])
+            if cid:
+                if changes.get("collection_action", "add") == "remove":
+                    self.db.executemany("DELETE FROM collection_assets WHERE collection_id=? AND asset_id=?",
+                                        [(cid, aid) for aid in ids])
+                else:
+                    self.db.executemany("INSERT OR IGNORE INTO collection_assets VALUES(?,?)",
+                                        [(cid, aid) for aid in ids])
+        return {"updated": len(ids)}
+
+    def save_collection(self, name, cid=None):
+        name = name.strip()
+        if not name or len(name) > 64:
+            raise ValueError("集合名称需要 1–64 个字符")
+        with self.lock, self.db:
+            if cid and not self.rows("SELECT id FROM collections WHERE id=?", (cid,)):
+                raise ValueError("集合不存在")
+            try:
+                if cid:
+                    self.db.execute("UPDATE collections SET name=? WHERE id=?", (name, cid))
+                else:
+                    cid = uuid.uuid4().hex
+                    self.db.execute("INSERT INTO collections VALUES(?,?,?)", (cid, name, time.time()))
+            except sqlite3.IntegrityError as exc:
+                raise ValueError("已存在同名集合") from exc
+        return self.rows("SELECT * FROM collections WHERE id=?", (cid,))[0]
+
+    def remove_collection(self, cid):
+        if not self.execute("DELETE FROM collections WHERE id=?", (cid,)):
+            raise ValueError("集合不存在")
+
+    def update_asset(self, aid, changes):
+        self.get_asset(aid)
+        if "tags" in changes:
+            tags = self.valid_tags(changes["tags"])
+            self.execute("UPDATE assets SET tags=? WHERE id=?", (json.dumps(tags, ensure_ascii=False), aid))
+        if "favorite" in changes:
+            self.execute("UPDATE assets SET favorite=? WHERE id=?", (int(changes["favorite"]), aid))
+        return self.get_asset(aid)
+
+    def summary(self):
+        counts = {r["status"]: r["n"] for r in self.rows("SELECT status,count(*) n FROM assets WHERE excluded=0 GROUP BY status")}
+        folders = self.rows("""SELECT f.*,count(a.id) AS count FROM folders f LEFT JOIN assets a
+            ON a.folder_id=f.id AND a.status!='missing' AND a.excluded=0 GROUP BY f.id ORDER BY f.name""")
+        for folder in folders:
+            folder["exclusions"] = json.loads(folder["exclusions"])
+            folder["excluded_count"] = self.rows("SELECT count(*) n FROM assets WHERE folder_id=? AND excluded=1", (folder["id"],))[0]["n"]
+        tags = self.rows("""SELECT j.value AS name,count(*) AS count FROM assets a,json_each(a.tags) j
+            WHERE a.status!='missing' AND a.excluded=0 GROUP BY j.value ORDER BY count DESC,j.value LIMIT 100""")
+        collections = self.rows("""SELECT c.*,count(a.id) count FROM collections c
+            LEFT JOIN collection_assets ca ON ca.collection_id=c.id
+            LEFT JOIN assets a ON a.id=ca.asset_id AND a.excluded=0 AND a.status!='missing'
+            GROUP BY c.id ORDER BY c.name COLLATE NOCASE,c.id""")
+        return {"counts": counts, "total": sum(v for k, v in counts.items() if k != "missing"),
+                "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND status!='missing'")[0]["n"],
+                "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
+                "blender_available": bool(blender_executable()),
+                "favorites": self.rows("SELECT count(*) n FROM assets WHERE favorite=1 AND status!='missing' AND excluded=0")[0]["n"],
+                "collections": collections,
+                "folders": folders, "tags": tags, "model": self.inference.status,
+                "model_error": self.inference.error, "data_dir": str(self.root),
+                "jobs": self.rows("SELECT * FROM jobs ORDER BY created DESC LIMIT 20")}
+
+    @staticmethod
+    def owned_sql():
+        return """EXISTS(SELECT 1 FROM model_resources r JOIN assets parent ON parent.id=r.model_id
+            WHERE r.path=a.path AND parent.excluded=0 AND parent.status!='missing')"""
+
+    def close(self):
+        self.stopping.set()
+        if self.observer:
+            self.observer.stop()
+            self.observer.join(timeout=2)
+        # Interrupted jobs are reconciled on the next launch, not marked complete.

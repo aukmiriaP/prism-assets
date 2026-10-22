@@ -1,0 +1,46 @@
+.venv/
+models/
+__pycache__/
+*.pyc
+.DS_Store
+node_modules/
+dist/
+build/
+release/
+*.sqlite3*
+*.log
+
+# Local libraries, private backups and machine-specific verification output
+backups/
+verification-*/
+library/
+thumbnails/
+datasets/
+model-location.json
+
+# Secrets, local settings and generated media / archives
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.safetensors
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.gguf
+*.npy
+*.npz
+*.zip
+*.rar
+*.dmg
+*.app/
+.uploads/
+
+# Tool and editor caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.vscode/
+.idea/
