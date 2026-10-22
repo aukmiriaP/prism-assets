@@ -48,6 +48,7 @@ function App() {
   const [bulkTag, setBulkTag] = useState('');
   const [bulkCollection, setBulkCollection] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [retryBusy, setRetryBusy] = useState(false);
   const [collectionEditor, setCollectionEditor] = useState<Collection | 'new' | null>(null);
   const [exclusionEditor, setExclusionEditor] = useState<FolderType | null>(null);
   const [copies, setCopies] = useState<Asset[] | null>(null);
@@ -142,11 +143,18 @@ function App() {
     return () => clearTimeout(timer);
   }, [connection, scope, folder?.id, collection?.id, activeTag, filters, query, limit, topK, groupDuplicates, refresh, countsKey, scanKey]);
   useEffect(() => {
+    let stopped = false;
     if (selected) {
       const updated = result.items.find(a => a.id === selected.id);
       if (updated) setSelected(updated);
+      // A retried file leaves the failure list while queued, but its open detail
+      // must still reflect completion or another failure.
+      else api<Asset>(`/assets/${selected.id}`).then(value => {
+        if (!stopped) setSelected(old => old?.id === value.id ? value : old);
+      }).catch(() => {});
     }
-  }, [result]);
+    return () => { stopped = true; };
+  }, [result, selected?.id]);
   const chooseScope = (value: string, tag = '') => { setScope(value); setActiveTag(tag); setSelected(null); setLimit(200); scrollRef.current?.scrollTo(0, 0); };
   const addFolder = () => run(async () => {
     const paths = await window.prism.chooseFolder();
@@ -166,6 +174,21 @@ function App() {
   };
   const similar = (asset: Asset) => { setQuery({ asset_id: asset.id, label: asset.name }); setDraft(''); setLimit(200); };
   const scan = (f: FolderType) => run(async () => { await api(`/folders/${f.id}/scan`, 'POST', { retry: true }); await loadSummary(); setTasksOpen(true); });
+  const retry = (ids?: string[]) => run(async () => {
+    setRetryBusy(true);
+    try {
+      const data = await api<{ queued: number; busy: number }>('/assets/retry', 'POST', {
+        ids: ids || [], filters: { ...filters, folder_id: folder?.id || '', collection_id: collection?.id || '',
+          tag: activeTag, favorite: scope === 'favorites',
+          kind: scope === 'models' ? 'model' : scope === 'textures' ? 'texture' : scope === 'images' ? 'image' : '' },
+      });
+      notify(data.queued ? `已安排 ${data.queued} 项重试${data.busy ? `；另 ${data.busy} 项所在目录正在索引` : ''}`
+        : data.busy ? `${data.busy} 项所在目录正在索引，请完成后重试` : '当前没有可重试的失败项');
+      await loadSummary();
+      setRefresh(n => n + 1);
+      if (data.queued) setTasksOpen(true);
+    } finally { setRetryBusy(false); }
+  });
   const running = summary?.jobs.find(j => ['queued', 'running'].includes(j.status));
   const clearSearch = () => { setQuery({}); setDraft(''); setLimit(200); };
   const selectAsset = (asset: Asset, extend = false) => {
@@ -252,6 +275,7 @@ function App() {
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
           <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
           {collection && <button onClick={() => setCollectionEditor(collection)}>管理集合</button>}
+          {scope === 'error' && !searching && <button disabled={retryBusy || !result.total} onClick={() => retry()}><RefreshCw size={15}/> 重试当前范围</button>}
           <button className={filtersOpen ? 'selected-control' : ''} onClick={() => setFiltersOpen(v => !v)}><SlidersHorizontal size={15}/> 筛选</button>
           {folder && <button title="重新扫描此目录" onClick={() => scan(folder)}><RefreshCw size={16}/></button>}
         </div>
@@ -284,6 +308,8 @@ function App() {
           <button disabled={!checkedIds.length || !bulkTag.trim() || busy || bulkBusy} onClick={() => bulk({ remove_tags: [bulkTag.trim()] })}>移除标签</button>
           <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ favorite: true })}>批量收藏</button>
           <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ favorite: false })}>取消收藏</button>
+          {checkedAssets.some(a => a.status === 'error') && <button disabled={retryBusy || busy || bulkBusy}
+            onClick={() => retry(checkedIds)}>重试选中失败项</button>}
           <select aria-label="目标集合" value={bulkCollection} onChange={e => setBulkCollection(e.target.value)}><option value="">选择集合…</option>{summary.collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
           <button disabled={!checkedIds.length || !bulkCollection || busy || bulkBusy} onClick={() => bulk({ collection_id: bulkCollection })}>加入集合</button>
           {collection && <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ collection_id: collection.id, collection_action: 'remove' })}>移出当前集合</button>}
@@ -330,7 +356,11 @@ function App() {
           <button className="inspector-preview" onClick={() => setPreview(true)}>{selected.thumbnail ? <img src={imageUrl(selected)} alt="选中素材预览"/> : <ImageIcon size={40}/>}<span><Maximize2 size={14}/> {selected.kind === 'model' ? '旋转查看 3D' : '大图预览'}</span></button>
           <h2>{selected.name}</h2><div className="detail-status"><i className={selected.status}/> {labels[selected.status]}</div>
           {selected.error && <p className="asset-error">{selected.error}</p>}
-          <div className="detail-actions"><button className="primary" disabled={selected.status !== 'ready'} onClick={() => similar(selected)}><Sparkles size={15}/> 查找相似</button><button title={selected.favorite ? '取消收藏' : '收藏素材'} onClick={() => run(() => patch(selected, { favorite: !selected.favorite }))}><Heart size={17} fill={selected.favorite ? 'currentColor' : 'none'}/></button></div>
+          <div className="detail-actions"><button className="primary" disabled={selected.status === 'error'
+            ? retryBusy || summary.jobs.some(j => j.folder_id === selected.folder_id && ['queued', 'running'].includes(j.status))
+            : selected.status !== 'ready'} onClick={() => selected.status === 'error' ? retry([selected.id]) : similar(selected)}>
+            {selected.status === 'error' ? <><RefreshCw size={15}/> 重试索引</> : <><Sparkles size={15}/> 查找相似</>}
+          </button><button title={selected.favorite ? '取消收藏' : '收藏素材'} onClick={() => run(() => patch(selected, { favorite: !selected.favorite }))}><Heart size={17} fill={selected.favorite ? 'currentColor' : 'none'}/></button></div>
           {selected.kind === 'model' && <ModelDetails asset={selected} connection={connection}/>}
           {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属模型</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => setSelected(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
           <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>

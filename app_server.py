@@ -138,6 +138,16 @@ class Filters(BaseModel):
     group_duplicates: bool = True
 
 
+class RetryRequest(BaseModel):
+    ids: list[str] = Field(default_factory=list, max_length=5000)
+    filters: Filters = Field(default_factory=Filters)
+
+
+@app.post("/assets/retry")
+def retry_assets(body: RetryRequest):
+    return app.state.catalog.retry_assets(body.ids, body.filters.model_dump())
+
+
 @app.post("/assets/list")
 def assets(body: Filters):
     return app.state.catalog.list_assets(body.model_dump())

@@ -283,17 +283,53 @@ class Catalog:
             self.active.add(fid)
             self.execute("INSERT INTO jobs(id,folder_id,name,status,created) VALUES(?,?,?,'queued',?)",
                          (jid, fid, folders[0]["name"], time.time()))
-            self.scan_queue.put((jid, folders[0], retry, automatic))
+            self.scan_queue.put((jid, folders[0], retry, automatic, None))
             return {"id": jid, "status": "queued"}
+
+    def retry_assets(self, ids=None, filters=None):
+        """Queue failed files only, retaining asset IDs and all user metadata."""
+        with self.lock:
+            if ids:
+                ids = list(dict.fromkeys(ids))
+                assets = self.rows("SELECT * FROM assets WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
+                if len(assets) != len(ids):
+                    raise ValueError("部分素材不存在，请刷新后重试")
+                assets = [a for a in assets if a["status"] == "error" and not a["excluded"]]
+            else:
+                clauses, params = self.asset_filters({**(filters or {}), "status": "error"})
+                assets = self.rows("SELECT a.* FROM assets a WHERE " + " AND ".join(clauses), params)
+            response = {"queued": 0, "busy": 0, "jobs": []}
+            groups = {}
+            for asset in assets:
+                groups.setdefault(asset["folder_id"], []).append(asset["id"])
+            for fid, targets in groups.items():
+                if fid in self.active:
+                    response["busy"] += len(targets)
+                    continue
+                folder = self.rows("SELECT * FROM folders WHERE id=?", (fid,))[0]
+                jid = uuid.uuid4().hex
+                with self.db:
+                    self.db.executemany("UPDATE assets SET status='pending',error=NULL,vector=NULL WHERE id=?",
+                                        [(aid,) for aid in targets])
+                    self.db.execute("INSERT INTO jobs(id,folder_id,name,status,created) VALUES(?,?,?,'queued',?)",
+                                    (jid, fid, "重试：" + folder["name"], time.time()))
+                self.active.add(fid)
+                self.scan_queue.put((jid, folder, False, False, targets))
+                response["queued"] += len(targets)
+                response["jobs"].append(jid)
+            return response
 
     def scan_loop(self):
         while not self.stopping.is_set():
             try:
-                jid, folder, retry, automatic = self.scan_queue.get(timeout=.5)
+                jid, folder, retry, automatic, targets = self.scan_queue.get(timeout=.5)
             except queue.Empty:
                 continue
             try:
-                self.scan(jid, folder, retry, automatic)
+                if targets is None:
+                    self.scan(jid, folder, retry, automatic)
+                else:
+                    self.retry_job(jid, folder, targets)
             except Exception as exc:
                 self.execute("UPDATE jobs SET status='failed',error=?,finished=? WHERE id=?",
                              (str(exc), time.time(), jid))
@@ -304,6 +340,28 @@ class Catalog:
                         self.rescan_again.discard(folder["id"])
                         self.rescan(folder["id"])
                 self.scan_queue.task_done()
+
+    def retry_job(self, jid, folder, targets):
+        self.execute("UPDATE jobs SET status='running',total=? WHERE id=?", (len(targets), jid))
+        failed = 0
+        for i, aid in enumerate(targets):
+            if self.stopping.is_set():
+                return
+            asset = self.rows("SELECT * FROM assets WHERE id=?", (aid,))[0]
+            try:
+                if not asset["excluded"]:
+                    path = Path(asset["path"])
+                    stat = path.stat()
+                    self.execute("UPDATE assets SET mtime=?,size=?,updated=? WHERE id=?",
+                                 (stat.st_mtime_ns, stat.st_size, time.time(), aid))
+                    self.index_one(aid, path, stat.st_mtime_ns, stat.st_size)
+            except Exception as exc:
+                failed += 1
+                self.execute("UPDATE assets SET status=?,vector=NULL,error=? WHERE id=?",
+                             ("missing" if isinstance(exc, FileNotFoundError) else "error", str(exc)[-1000:], aid))
+            self.execute("UPDATE jobs SET done=?,failed=? WHERE id=?", (i + 1, failed, jid))
+        self.execute("UPDATE jobs SET status=?,finished=? WHERE id=?",
+                     ("partial" if failed else "completed", time.time(), jid))
 
     def scan(self, jid, folder, retry, automatic):
         fid, base = folder["id"], Path(folder["path"])
@@ -508,7 +566,7 @@ class Catalog:
         return [self.public(a) for a in self.rows("""SELECT * FROM assets WHERE hash=?
             AND status='ready' AND excluded=0 ORDER BY path,id""", (asset["hash"],))]
 
-    def list_assets(self, filters, vector=None):
+    def asset_filters(self, filters):
         clauses, params = ["a.excluded=0"], []
         if filters.get("kind") in ("image", "model"):
             clauses.append("a.kind=?")
@@ -541,6 +599,10 @@ class Catalog:
         if filters.get("min_width", 0):
             clauses.append("a.width>=?")
             params.append(filters["min_width"])
+        return clauses, params
+
+    def list_assets(self, filters, vector=None):
+        clauses, params = self.asset_filters(filters)
         if vector is not None:
             clauses.append("a.status='ready' AND a.vector IS NOT NULL")
         where = " AND ".join(clauses)

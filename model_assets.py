@@ -184,12 +184,21 @@ def gltf_document(path):
         return json.loads(path.read_text())
     with path.open("rb") as stream:
         header = stream.read(20)
+        if header.startswith(b"CTV1"):
+            raise ValueError("这是 ComfyTV 的 CTV1 封装资源，不是标准 GLB；请导出标准 GLB 后重试")
+        if header.startswith(b"version https://git-"):
+            raise ValueError("这是 Git LFS 指针，请拉取真实模型文件后重试")
         if len(header) != 20:
             raise ValueError("GLB 文件截断")
-        magic, version, _, length, kind = struct.unpack("<5I", header)
+        magic, version, total, length, kind = struct.unpack("<5I", header)
         if magic != 0x46546C67 or version != 2 or kind != 0x4E4F534A or length > 64 * 1024**2:
-            raise ValueError("GLB 头部无效")
-        return json.loads(stream.read(length))
+            raise ValueError("GLB 头部无效，文件可能损坏或并非标准 GLB")
+        if total != path.stat().st_size or length > total - 20:
+            raise ValueError("GLB 文件截断或长度不匹配，请获取完整文件后重试")
+        try:
+            return json.loads(stream.read(length))
+        except (ValueError, UnicodeError) as exc:
+            raise ValueError("GLB 的 JSON 数据无效，请重新导出模型后重试") from exc
 
 
 def gltf_materials(path, document):
@@ -217,11 +226,13 @@ def gltf_materials(path, document):
 
 
 def prepare_model(path, output):
+    if path.stat().st_size > 512 * 1024**2:
+        raise ValueError("当前支持 512 MB 以内的模型")
+    if path.suffix.lower() in {".glb", ".gltf"}:
+        gltf_document(path)
     executable = blender_executable()
     if not executable:
         raise ValueError("3D 预览需要 Blender，请安装到 /Applications/Blender.app 后重试索引")
-    if path.stat().st_size > 512 * 1024**2:
-        raise ValueError("当前支持 512 MB 以内的模型")
     output.mkdir(parents=True, exist_ok=True)
     worker = Path(getattr(sys, "_MEIPASS", Path(__file__).parent)) / "model_worker.py"
     payload = {"source": str(path), "output": str(output)}
@@ -235,7 +246,10 @@ def prepare_model(path, output):
                                      "--threads", "4", "--python", str(worker), "--", str(request)],
                                     stdout=log, stderr=subprocess.STDOUT, timeout=240)
         if result.returncode or not (output / "metadata.json").is_file():
-            detail = (output / "convert.log").read_text(errors="replace")[-1200:]
+            lines = (output / "convert.log").read_text(errors="replace").splitlines()
+            errors = [line.strip() for line in lines if line.strip().startswith(
+                ("RuntimeError:", "ValueError:", "AttributeError:", "KeyError:", "OSError:", "Error:"))]
+            detail = errors[-1] if errors else "\n".join(lines[-5:])[-800:]
             raise ValueError("3D 转换失败：" + detail)
     except subprocess.TimeoutExpired as exc:
         raise ValueError("3D 转换超过 4 分钟，请简化模型后重试") from exc
