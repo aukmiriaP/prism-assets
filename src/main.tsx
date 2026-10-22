@@ -6,13 +6,14 @@ import { Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight,
   Folder, FolderOpen, FolderPlus, Grid2X2, HardDrive, Heart, Image as ImageIcon,
   ImagePlus, LoaderCircle, Maximize2, RefreshCw, Search, Settings2, SlidersHorizontal,
   Sparkles, Tag, Trash2, TriangleAlert, X } from 'lucide-react';
-import type { Asset, Collection, Connection, Folder as FolderType, Result, Summary } from './types';
+import type { Asset, Collection, Connection, Folder as FolderType, Result, SearchStrategy, Summary } from './types';
 import { CollectionEditor, ExclusionEditor } from './organization';
 import { ModelDetails, ModelViewer } from './model-viewer';
 import { listLocation, useNavigation, type BrowseView } from './navigation';
 import './style.css';
 import './organization.css';
 import './navigation.css';
+import './search.css';
 
 const api = <T,>(route: string, method?: string, body?: unknown) => window.prism.api<T>(route, method, body);
 const bytes = (n: number) => n > 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
@@ -62,6 +63,7 @@ function App() {
   const requestId = useRef(0);
   const restoreScroll = useRef<number | null>(null);
   const searching = Boolean(query.text || query.image_path || query.asset_id);
+  const strategy = query.strategy || 'hybrid';
   const groupedResources = scope === 'textures' && !flatTextures && !modelGroup && !searching;
   const folder = summary?.folders.find(f => f.id === scope);
   const collection = summary?.collections.find(c => `collection:${c.id}` === scope);
@@ -189,7 +191,13 @@ function App() {
     if (listLocation(target) !== listLocation(navigation.view)) resetResults();
     setMultiMode(false); setChecked([]); setPreview(false); setCopies(null);
   };
-  const search = (value: BrowseView['query'], input = '') => browse({ query: value, draft: input, limit: 200 });
+  const search = (value: BrowseView['query'], input = '') => browse({
+    query: { ...value, strategy: value.strategy || strategy }, draft: input, limit: 200,
+  });
+  const changeStrategy = (value: SearchStrategy) => {
+    if (query.text) search({ ...query, strategy: value }, draft);
+    else navigation.update('query', { ...query, strategy: value });
+  };
   const addFolder = () => run(async () => {
     const paths = await window.prism.chooseFolder();
     for (const path of paths) await api('/folders', 'POST', { path });
@@ -318,12 +326,20 @@ function App() {
       <div className="search-area">
         <form className="search-box" onSubmit={e => { e.preventDefault(); if (draft.trim()) search({ text: draft.trim() }, draft.trim()); }}>
           <Search size={21}/><input ref={searchRef} aria-label="语义搜索" value={draft} onChange={e => setDraft(e.target.value)}
-            placeholder="用画面描述找素材，例如：冷色调的石制拱门"/>
+            placeholder="搜索名称、标签或画面描述，例如：赛琳娜 / 冷色石制拱门"/>
           {draft && <button type="button" title="清空搜索" onClick={clearSearch}><X size={15}/></button>}
+          {!query.image_path && !query.asset_id && <select className="search-strategy" aria-label="文字搜索方式"
+            value={strategy} onChange={e => changeStrategy(e.target.value as SearchStrategy)}>
+            <option value="hybrid">混合检索</option><option value="keyword">关键词</option><option value="semantic">语义检索</option>
+          </select>}
           <button type="button" title="以图搜图" className="image-search" onClick={chooseImage}><ImagePlus size={19}/><span>以图搜图</span></button>
           <button type="submit" className="search-submit" disabled={!draft.trim()} title="搜索"><ArrowRight size={18}/></button>
         </form>
-        <div className="search-hint"><Sparkles size={12}/> 中英文描述 · 拖入图片寻找相似素材 <span>完全在本机处理</span></div>
+        <div className="search-hint"><Sparkles size={12}/> {query.image_path || query.asset_id ? '按画面相似度寻找素材'
+          : strategy === 'keyword' ? '匹配文件名、标签、所属模型与目录，无需加载模型'
+          : strategy === 'semantic' ? '按中英文画面描述寻找相似素材'
+          : '名称命中优先 · 语义候选补充 · 拖入图片寻找相似素材'} <span>完全在本机处理</span></div>
+        {searching && result.warning && <p className="search-warning">{result.warning}</p>}
       </div>
       <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}<span>{result.total.toLocaleString()} 项</span></h1></div>
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
@@ -335,7 +351,9 @@ function App() {
           {folder && <button title="重新扫描此目录" onClick={() => scan(folder)}><RefreshCw size={16}/></button>}
         </div>
       </div>
-      {searching && <div className="query-chip"><span>{query.text ? <Search size={13}/> : <ImageIcon size={13}/>} {query.text || query.label}</span><button onClick={clearSearch}><X size={13}/> 退出搜索</button><small>按余弦相似度排序；分数不代表正确概率</small></div>}
+      {searching && <div className="query-chip"><span>{query.text ? <Search size={13}/> : <ImageIcon size={13}/>} {query.text || query.label}</span><button onClick={clearSearch}><X size={13}/> 退出搜索</button><small>{query.text && strategy !== 'semantic'
+        ? strategy === 'keyword' ? '仅显示元数据关键词命中' : '关键词命中优先，其余为语义候选'
+        : '按余弦相似度排序；分数不代表正确概率'}</small></div>}
       <div className="result-controls">
         {!groupedResources && <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>}
         {scope === 'textures' && <>
@@ -348,7 +366,7 @@ function App() {
         {searching && <label>候选上限<select aria-label="候选上限" value={topK} onChange={e => setTopK(+e.target.value)}>
           {[20, 50, 100, 200].map(k => <option key={k} value={k}>前 {k} 项</option>)}</select></label>}
         <span aria-live="polite">{busy ? '更新中…' : groupedResources ? `${result.total} 个模型分组 · ${result.resource_total ?? 0} 张附属贴图（共享贴图可属于多个模型）`
-          : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? ` · 返回 ${result.total} 个候选` : ''}`}</span>
+          : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? `${query.text && result.keyword_total !== undefined ? ` · 关键词命中 ${result.keyword_total} 项` : ''} · 返回 ${result.total} 个候选` : ''}`}</span>
       </div>
       {summary.models > 0 && <div className="component-note">{groupedResources ? '点击模型分组查看材质引用、同目录辅助贴图和模型说明；原文件保持原位。'
         : '模型附属贴图按模型自动分组；收藏、标签与虚拟集合仍可单独整理贴图。'}</div>}
@@ -407,7 +425,10 @@ function App() {
                     {(asset.copy_count || 0) > 1 && <span className="copy-badge">{asset.copy_count} 份相同文件</span>}
                     <button title={asset.favorite ? '取消收藏' : '收藏素材'} className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`}
                       onClick={e => { e.stopPropagation(); run(() => patch(asset, { favorite: !asset.favorite })); }}><Heart size={15} fill={asset.favorite ? 'currentColor' : 'none'}/></button>
-                    {asset.score !== undefined && <span className="score-badge">{asset.score.toFixed(3)}</span>}
+                    {query.text && strategy !== 'semantic' && asset.match_kind && <span className={`match-badge ${asset.keyword_fields?.length ? 'keyword' : ''}`}
+                      title={asset.keyword_fields?.join('、') || '按画面语义相似度召回'}>
+                      {asset.keyword_fields?.length ? `${asset.keyword_fields[0]}匹配` : '语义候选'}</span>}
+                    {asset.score !== undefined && (!query.text || strategy === 'semantic') && <span className="score-badge">{asset.score.toFixed(3)}</span>}
                     {asset.status !== 'ready' && <span className={`asset-state ${asset.status}`} title={asset.error || ''}>{labels[asset.status]}</span>}
                   </div>
                   <div className="asset-caption"><strong>{asset.name}</strong><span>{groupedResources ? `引用 ${asset.bound_count} · 辅助 ${asset.auxiliary_count}` : asset.kind === 'model' ? `3D 模型${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开分组' : bytes(asset.size)}</span></div>
@@ -457,7 +478,7 @@ function App() {
             <p className="file-path" key={i}>{entry.old_path}</p>)}<p className="organization-description">旧路径记录已保留，当前使用上方的现存文件。</p></div>}
         </aside>}
       </div>
-      <footer className="footer"><span><HardDrive size={12}/> {summary.total} 个文件 · {summary.counts.ready || 0} 个已索引</span><span>{busy ? '正在搜索…' : searching ? '按视觉相关度排序' : '目录变动自动同步'} <i/> 空格预览</span></footer>
+      <footer className="footer"><span><HardDrive size={12}/> {summary.total} 个文件 · {summary.counts.ready || 0} 个已索引</span><span>{busy ? '正在搜索…' : searching ? query.text && strategy !== 'semantic' ? strategy === 'keyword' ? '关键词匹配' : '关键词优先 · 语义补充' : '按视觉相关度排序' : '目录变动自动同步'} <i/> 空格预览</span></footer>
     </section>
     {tasksOpen && <div className="task-panel"><div className="panel-heading"><div><span className="eyebrow">BACKGROUND ACTIVITY</span><h2>索引任务</h2></div><button title="关闭任务" onClick={() => setTasksOpen(false)}><X size={18}/></button></div>
       {summary.model_error && <p className="asset-error">{summary.model_error}</p>}

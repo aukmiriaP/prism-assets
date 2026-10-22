@@ -1,3 +1,4 @@
+export type SearchStrategy = 'hybrid' | 'keyword' | 'semantic';
 export type Asset = {
   kind: 'image' | 'model'; model: ModelInfo | null;
   owners?: { id: string; name: string; relation: string }[];
@@ -5,6 +6,7 @@ export type Asset = {
   size: number; width: number; height: number; mtime: number; thumbnail: string | null;
   tags: string[]; favorite: boolean; status: string; error: string | null;
   score?: number; added: number; copy_count?: number; member_ids?: string[];
+  match_kind?: 'keyword' | 'semantic' | 'both'; keyword_fields?: string[];
   collections?: { id: string; name: string }[];
   resource_count?: number; bound_count?: number; auxiliary_count?: number;
   recovery_candidates?: Asset[];
@@ -28,7 +30,8 @@ export type Summary = { total: number; favorites: number; counts: Record<string,
   folders: Folder[]; tags: { name: string; count: number }[]; model: string;
   model_error: string | null; data_dir: string; jobs: Job[]; collections: Collection[] };
 export type Result = { items: Asset[]; total: number; scope_total?: number; unique_total?: number;
-  collapsed_count?: number; top_k?: number; resource_total?: number };
+  collapsed_count?: number; top_k?: number; resource_total?: number; strategy?: SearchStrategy;
+  keyword_total?: number; returned_keyword?: number; warning?: string; semantic_available?: boolean };
 export type Connection = { base: string; token: string };
 declare global {
   interface Window {

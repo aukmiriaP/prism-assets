@@ -1,9 +1,9 @@
 import { useState, type SetStateAction } from 'react';
-import type { Asset } from './types';
+import type { Asset, SearchStrategy } from './types';
 
 export type BrowseView = {
   scope: string; activeTag: string; draft: string;
-  query: { text?: string; image_path?: string; asset_id?: string; label?: string };
+  query: { text?: string; image_path?: string; asset_id?: string; label?: string; strategy?: SearchStrategy };
   filters: { name: string; ext: string; min_width: number; sort: string };
   filtersOpen: boolean; selected: Asset | null; modelGroup: Asset | null;
   flatTextures: boolean; resourceRelation: string; limit: number; scrollTop: number;

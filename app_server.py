@@ -192,6 +192,7 @@ class SearchRequest(BaseModel):
     text: str = Field(default="", max_length=4000)
     image_path: str = ""
     asset_id: str = ""
+    strategy: Literal["hybrid", "keyword", "semantic"] = "hybrid"
     filters: Filters = Field(default_factory=Filters)
 
 
@@ -200,6 +201,8 @@ def search(body: SearchRequest):
     catalog = app.state.catalog
     if sum(bool(x) for x in (body.text.strip(), body.image_path, body.asset_id)) != 1:
         raise ValueError("请输入文字或选择一张参考图片")
+    if body.text.strip() and body.strategy == "keyword":
+        return catalog.text_assets(body.text.strip(), body.filters.model_dump(), strategy="keyword")
     if body.asset_id:
         result = catalog.list_assets(body.filters.model_dump(), catalog.similar_vector(body.asset_id))
         result["mode"] = "asset"
@@ -216,9 +219,17 @@ def search(body: SearchRequest):
     try:
         vector = future.result(timeout=300)
     except Exception as exc:
+        if body.text.strip() and body.strategy == "hybrid":
+            result = catalog.text_assets(body.text.strip(), body.filters.model_dump())
+            if result["keyword_total"]:
+                result["warning"] = "语义检索暂不可用，仅显示关键词命中"
+                return result
         raise HTTPException(503, f"模型编码失败：{exc}") from exc
+    if body.text.strip() and body.strategy == "hybrid":
+        return catalog.text_assets(body.text.strip(), body.filters.model_dump(), vector)
     result = catalog.list_assets(body.filters.model_dump(), vector)
     result["mode"] = "image" if path else "text"
+    result["strategy"] = "semantic"
     return result
 
 

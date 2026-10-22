@@ -17,6 +17,7 @@ import uuid
 import numpy as np
 from PIL import Image, ImageOps
 from model_assets import MODEL_EXTENSIONS, IMAGE_EXTENSIONS, dependency_stamp, prepare_model, blender_executable
+from search_matching import KeywordMatcher
 
 EXTENSIONS = IMAGE_EXTENSIONS | MODEL_EXTENSIONS
 PROFILE = "embeddinggemma2:1a4ffddb7905d3f63486748deabe091a01fb6201:mlx0.7.9:768:exif-rgb-2048:v1"
@@ -739,6 +740,94 @@ class Catalog:
                 self.db.executemany("INSERT OR IGNORE INTO model_resources VALUES(?,?,?)",
                     [(row["id"], r["path"], r["relation"]) for r in metadata.get("resources", [])
                      if r["path"] and r["kind"] == "texture" and (r["relation"] == "bound" or counts[parent] == 1)])
+
+    def text_assets(self, text, filters, vector=None, strategy="hybrid"):
+        """Merge metadata hits and semantic candidates before Top-K, selecting the best matching copy."""
+        matcher = KeywordMatcher(text)
+        clauses, params = self.asset_filters(filters)
+        where = " AND ".join(clauses)
+        offset = max(0, int(filters.get("offset", 0)))
+        limit = min(1000, max(1, int(filters.get("limit", 200))))
+        top_k = min(200, max(1, int(filters.get("top_k", 50))))
+        grouped = filters.get("group_duplicates", True)
+        with self.lock:
+            owners = {}
+            for row in self.rows("""SELECT r.path,parent.name,json_extract(parent.model_data,'$.name') model_name
+                FROM model_resources r JOIN assets parent ON parent.id=r.model_id
+                WHERE parent.excluded=0 AND parent.archived=0 AND parent.status!='missing'"""):
+                owners.setdefault(row["path"], []).extend([row["name"], row["model_name"] or ""])
+            collections = {}
+            for row in self.rows("""SELECT ca.asset_id,c.name FROM collection_assets ca
+                JOIN collections c ON c.id=ca.collection_id"""):
+                collections.setdefault(row["asset_id"], []).append(row["name"])
+            groups, by_id = {}, {}
+            rows = self.rows("""SELECT a.id,a.path,a.name,a.kind,a.tags,a.hash,a.status,a.added,
+                json_extract(a.model_data,'$.name') model_name,f.path linked_root
+                FROM assets a LEFT JOIN folders f ON f.id=a.folder_id WHERE """ + where, params)
+            for asset in rows:
+                path = Path(asset["path"])
+                try:
+                    directory = str(path.parent.relative_to(asset["linked_root"])) if asset["linked_root"] else path.parent.name
+                except ValueError:
+                    directory = path.parent.name
+                fields = [("文件名", path.stem, 60), ("文件名", asset["name"], 55),
+                          ("模型名称", asset["model_name"], 50), ("目录", directory, 20)]
+                fields.extend(("标签", tag, 45) for tag in json.loads(asset["tags"]))
+                fields.extend(("所属模型", name, 30) for name in owners.get(asset["path"], []))
+                fields.extend(("集合", name, 15) for name in collections.get(asset["id"], []))
+                strength, reasons = matcher.match(fields)
+                key = "hash:" + asset["hash"] if grouped and asset["status"] == "ready" and asset["hash"] else "id:" + asset["id"]
+                candidate = {**asset, "strength": strength, "keyword_fields": reasons, "score": None}
+                group = groups.setdefault(key, {"members": [], "candidates": []})
+                group["members"].append(asset["id"])
+                group["candidates"].append(candidate)
+                by_id[asset["id"]] = candidate
+            # Keep vector memory bounded; metadata ranking does not depend on embedding availability.
+            if vector is not None and strategy != "keyword":
+                cursor = self.db.execute("SELECT a.id,a.vector FROM assets a WHERE " + where +
+                    " AND a.status='ready' AND a.vector IS NOT NULL", params)
+                while batch := cursor.fetchmany(512):
+                    matrix = np.stack([np.frombuffer(r["vector"], dtype=np.float32) for r in batch])
+                    for row, score in zip(batch, matrix @ vector):
+                        by_id[row["id"]]["score"] = float(score)
+            candidates = []
+            keyword_total = 0
+            for key, group in groups.items():
+                keyword = [a for a in group["candidates"] if a["strength"]]
+                semantic = [a for a in group["candidates"] if a["score"] is not None]
+                keyword_total += bool(keyword)
+                eligible = keyword if strategy == "keyword" else semantic if strategy == "semantic" else keyword or semantic
+                if not eligible:
+                    continue
+                def rank(a):
+                    strength = 0 if strategy == "semantic" else a["strength"]
+                    score = a["score"] if a["score"] is not None else -2
+                    return (-strength, -score, a["name"].casefold(), a["id"])
+                best = min(eligible, key=rank)
+                candidates.append((rank(best), key, best))
+            if not keyword_total and strategy == "hybrid" and vector is not None:
+                result = self.list_assets(filters, vector)
+                for item in result["items"]:
+                    item.update(match_kind="semantic", keyword_fields=[])
+                return {**result, "keyword_total": 0, "returned_keyword": 0,
+                        "strategy": "hybrid", "mode": "text", "semantic_available": True}
+            candidates.sort(key=lambda row: row[0])
+            total = min(top_k, len(candidates))
+            items = []
+            for _, key, chosen in candidates[offset:min(total, offset + limit)]:
+                item = self.get_asset(chosen["id"])
+                item["member_ids"] = sorted(groups[key]["members"])
+                item["copy_count"] = len(item["member_ids"])
+                item["keyword_fields"] = chosen["keyword_fields"] if strategy != "semantic" else []
+                item["match_kind"] = ("semantic" if strategy == "semantic" else "both" if chosen["strength"] and chosen["score"] is not None
+                                      else "keyword" if chosen["strength"] else "semantic")
+                if chosen["score"] is not None:
+                    item["score"] = round(chosen["score"], 4)
+                items.append(item)
+        return {"items": items, "total": total, "scope_total": len(rows), "unique_total": len(groups),
+                "collapsed_count": len(rows) - len(groups), "offset": offset, "limit": limit, "top_k": top_k,
+                "keyword_total": keyword_total, "returned_keyword": sum(bool(a["keyword_fields"]) for a in items),
+                "strategy": strategy, "mode": "text", "semantic_available": vector is not None}
 
     def list_assets(self, filters, vector=None):
         clauses, params = self.asset_filters(filters)
