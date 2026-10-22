@@ -127,6 +127,7 @@ class Filters(BaseModel):
     folder_id: str = ""
     collection_id: str = ""
     model_id: str = ""
+    include_model: bool = False
     relation: Literal["", "bound", "auxiliary"] = ""
     status: str = ""
     favorite: bool = False

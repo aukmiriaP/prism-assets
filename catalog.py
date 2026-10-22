@@ -657,6 +657,12 @@ class Catalog:
             ON ca.collection_id=c.id WHERE ca.asset_id=? ORDER BY c.name""", (aid,))
         item["owners"] = self.rows("""SELECT a.id,a.name,r.relation FROM model_resources r JOIN assets a ON a.id=r.model_id
             WHERE r.path=? AND a.status!='missing' AND a.excluded=0 AND a.archived=0""", (item["path"],))
+        if item["kind"] == "model":
+            counts = self.rows("""SELECT count(*) resource_count,
+                coalesce(sum(r.relation='bound'),0) bound_count,coalesce(sum(r.relation='auxiliary'),0) auxiliary_count
+                FROM model_resources r JOIN assets child ON child.path=r.path
+                WHERE r.model_id=? AND child.excluded=0 AND child.archived=0 AND child.status!='missing'""", (aid,))[0]
+            item.update(counts)
         item["history"] = self.rows("""SELECT old_path,action,created FROM relocation_history
             WHERE EXISTS(SELECT 1 FROM json_each(replacements) WHERE value=?) ORDER BY created DESC""", (aid,))
         if item["status"] == "missing" and not item["archived"]:
@@ -703,9 +709,13 @@ class Catalog:
             clauses.append("EXISTS(SELECT 1 FROM collection_assets ca WHERE ca.asset_id=a.id AND ca.collection_id=?)")
             params.append(filters["collection_id"])
         if filters.get("model_id"):
-            clauses.append("""EXISTS(SELECT 1 FROM model_resources r JOIN assets parent ON parent.id=r.model_id
+            resource_clause = """EXISTS(SELECT 1 FROM model_resources r JOIN assets parent ON parent.id=r.model_id
                 WHERE r.path=a.path AND r.model_id=? AND parent.excluded=0 AND parent.archived=0
-                AND parent.status!='missing'""" + (" AND r.relation=?" if filters.get("relation") else "") + ")")
+                AND parent.status!='missing'""" + (" AND r.relation=?" if filters.get("relation") else "") + ")"
+            if filters.get("include_model"):
+                resource_clause = "(a.id=? OR " + resource_clause + ")"
+                params.append(filters["model_id"])
+            clauses.append(resource_clause)
             params.append(filters["model_id"])
             if filters.get("relation"):
                 params.append(filters["relation"])
@@ -839,6 +849,8 @@ class Catalog:
         offset, limit = max(0, int(filters.get("offset", 0))), min(1000, max(1, int(filters.get("limit", 200))))
         order = {"name": "name COLLATE NOCASE ASC", "oldest": "added ASC",
                  "newest": "added DESC"}.get(filters.get("sort"), "added DESC")
+        if filters.get("include_model"):
+            order = "CASE WHEN kind='model' THEN 0 ELSE 1 END," + order
         group_key = ("CASE WHEN a.status='ready' AND a.hash IS NOT NULL THEN 'hash:'||a.hash ELSE 'id:'||a.id END"
                      if filters.get("group_duplicates", True) else "'id:'||a.id")
         cte = f"""WITH eligible AS (SELECT a.*,{group_key} AS group_key FROM assets a WHERE {where}),

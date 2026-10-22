@@ -27,7 +27,7 @@ function App() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const navigation = useNavigation();
   const { scope, activeTag, draft, query, selected, filtersOpen, filters, limit,
-    modelGroup, flatTextures, resourceRelation } = navigation.view;
+    modelGroup, resourceRelation } = navigation.view;
   const field = <K extends keyof BrowseView>(key: K) =>
     (value: React.SetStateAction<BrowseView[K]>) => navigation.update(key, value);
   const setActiveTag = field('activeTag'), setDraft = field('draft'), setSelected = field('selected');
@@ -64,10 +64,11 @@ function App() {
   const restoreScroll = useRef<number | null>(null);
   const searching = Boolean(query.text || query.image_path || query.asset_id);
   const strategy = query.strategy || 'hybrid';
-  const groupedResources = scope === 'textures' && !flatTextures && !modelGroup && !searching;
+  const inModels = scope === 'models' || scope === 'textures';
+  const groupedResources = inModels && !modelGroup;
   const folder = summary?.folders.find(f => f.id === scope);
   const collection = summary?.collections.find(c => `collection:${c.id}` === scope);
-  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '模型附属贴图', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || '全部素材'));
+  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || '全部素材'));
   const checkedAssets = result.items.filter(a => checked.includes(a.id));
   const checkedIds = [...new Set(checkedAssets.flatMap(a => a.member_ids || [a.id]))];
   const columns = Math.max(2, Math.floor((gridWidth - 48) / (cardSize + 14)));
@@ -121,7 +122,7 @@ function App() {
     return () => observer.disconnect();
   }, [connection, summary]);
   useEffect(() => { virtual.measure(); }, [cellSize, columns]);
-  useEffect(() => { setChecked([]); anchor.current = null; }, [scope, activeTag, query, filters, groupDuplicates, topK, modelGroup, resourceRelation, flatTextures]);
+  useEffect(() => { setChecked([]); anchor.current = null; }, [scope, activeTag, query, filters, groupDuplicates, topK, modelGroup, resourceRelation]);
   useEffect(() => { setCopies(null); }, [selected?.id]);
   useEffect(() => {
     if (busy || restoreScroll.current === null) return;
@@ -140,13 +141,15 @@ function App() {
     const timer = setTimeout(async () => {
       setBusy(true);
       const params = { ...filters, limit: searching ? topK : limit, top_k: topK,
-        kind: scope === 'models' ? 'model' : scope === 'textures' ? 'texture' : scope === 'images' ? 'image' : '',
+        kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : '',
         exclude_components: scope === 'images',
-        model_id: modelGroup?.id || '', relation: resourceRelation,
+        include_components: Boolean(modelGroup),
+        model_id: modelGroup?.id || '', relation: resourceRelation === 'model' ? '' : resourceRelation,
+        include_model: Boolean(modelGroup) && (!resourceRelation || resourceRelation === 'model'),
         group_duplicates: groupDuplicates, collection_id: collection?.id || '', tag: activeTag, favorite: scope === 'favorites',
         status: ['error', 'missing'].includes(scope) ? scope : '', folder_id: folder?.id || '' };
       try {
-        const data = await api<Result>(searching ? '/search' : groupedResources ? '/assets/resource-groups' : '/assets/list', 'POST',
+        const data = await api<Result>(searching ? '/search' : '/assets/list', 'POST',
           searching ? { ...query, filters: params } : params);
         if (current === requestId.current) {
           setResult(data);
@@ -181,8 +184,12 @@ function App() {
   };
   const chooseScope = (value: string, tag = '') => browse({ scope: value, activeTag: tag,
     selected: null, modelGroup: null, resourceRelation: '', limit: 200 });
-  const enterModelGroup = (asset: Asset) => browse({ scope: 'textures', activeTag: '',
-    modelGroup: asset, selected: asset, resourceRelation: '', limit: 200 });
+  const enterModelGroup = (asset: Asset) => browse({ scope: 'models', activeTag: '', flatTextures: false,
+    modelGroup: asset, selected: asset, resourceRelation: '', limit: 200,
+    query: { strategy }, draft: '', filters: { name: '', ext: '', min_width: 0, sort: 'newest' } });
+  const returnToModels = () => browse({ scope: 'models', modelGroup: null, selected: null,
+    resourceRelation: '', flatTextures: false, limit: 200, query: { strategy }, draft: '',
+    filters: { name: '', ext: '', min_width: 0, sort: 'newest' } });
   const openAsset = (asset: Asset) => browse({ selected: asset }, true);
   const moveHistory = (delta: number) => {
     const target = navigation.entries[navigation.index + delta];
@@ -223,7 +230,10 @@ function App() {
       const data = await api<{ queued: number; busy: number }>('/assets/retry', 'POST', {
         ids: ids || [], filters: { ...filters, folder_id: folder?.id || '', collection_id: collection?.id || '',
           tag: activeTag, favorite: scope === 'favorites',
-          kind: scope === 'models' ? 'model' : scope === 'textures' ? 'texture' : scope === 'images' ? 'image' : '',
+          kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : '',
+          include_components: Boolean(modelGroup), model_id: modelGroup?.id || '',
+          relation: resourceRelation === 'model' ? '' : resourceRelation,
+          include_model: Boolean(modelGroup) && (!resourceRelation || resourceRelation === 'model'),
           exclude_components: scope === 'images' },
       });
       notify(data.queued ? `已安排 ${data.queued} 项重试${data.busy ? `；另 ${data.busy} 项所在目录正在索引` : ''}`
@@ -289,8 +299,7 @@ function App() {
       <div className="nav-label">素材库</div>
       <nav>
         <button title={`${summary.total} 个文件，其中 ${summary.components} 张贴图收纳在模型下`} className={scope === 'all' && !activeTag ? 'active' : ''} onClick={() => chooseScope('all')}><Grid2X2 size={17}/>全部素材<span>{summary.total - summary.components}</span></button>
-        <button className={scope === 'models' ? 'active' : ''} onClick={() => chooseScope('models')}><Box size={17}/>3D 模型<span>{summary.models}</span></button>
-        <button className={scope === 'textures' ? 'active' : ''} onClick={() => chooseScope('textures')}><ImageIcon size={17}/>模型附属贴图<span>{summary.components}</span></button>
+        <button title="按模型分组，包含模型文件、材质和附属贴图" className={inModels ? 'active' : ''} onClick={() => modelGroup ? returnToModels() : chooseScope('models')}><Box size={17}/>3D 模型<span>{summary.models}</span></button>
         <button title="独立图片文件数，不包含模型附属贴图" className={scope === 'images' ? 'active' : ''} onClick={() => chooseScope('images')}><ImageIcon size={17}/>独立图片<span>{summary.independent_images}</span></button>
         <button className={scope === 'favorites' ? 'active' : ''} onClick={() => chooseScope('favorites')}><Heart size={17}/>我的收藏<span>{summary.favorites}</span></button>
       </nav>
@@ -316,7 +325,7 @@ function App() {
     </aside>
     <section className="workspace">
       <header className="topbar">
-        <div className="breadcrumb">素材库 <ChevronRight size={13}/> <strong>{title}</strong></div>
+        <div className="breadcrumb">素材库 <ChevronRight size={13}/>{inModels && modelGroup && <>3D 模型 <ChevronRight size={13}/></>} <strong>{title}</strong></div>
         <button className={`task-toggle ${running ? 'working' : ''}`} onClick={() => setTasksOpen(v => !v)}>
           {running ? <LoaderCircle size={15} className="spin"/> : <Check size={15}/>}
           {running ? `正在索引 ${running.done}/${running.total || '…'}` : '索引任务'}</button>
@@ -343,9 +352,9 @@ function App() {
           : '名称命中优先 · 语义候选补充 · 拖入图片寻找相似素材'} <span>完全在本机处理</span></div>
         {searching && result.warning && <p className="search-warning">{result.warning}</p>}
       </div>
-      <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}<span>{result.total.toLocaleString()} 项</span></h1></div>
+      <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}<span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span></h1></div>
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
-          {!groupedResources && <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>}
+          <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
           {collection && <button onClick={() => setCollectionEditor(collection)}>管理集合</button>}
           {scope === 'error' && !searching && <button disabled={retryBusy || !result.total} onClick={() => retry()}><RefreshCw size={15}/> 重试当前范围</button>}
           {scope === 'missing' && <button disabled={recoveryBusy || Boolean(running)} onClick={recover}><RefreshCw size={15}/> 查找已移动文件</button>}
@@ -357,22 +366,22 @@ function App() {
         ? strategy === 'keyword' ? '仅显示元数据关键词命中' : '关键词命中优先，其余为语义候选'
         : '按余弦相似度排序；分数不代表正确概率'}</small></div>}
       <div className="result-controls">
-        {!groupedResources && <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>}
-        {scope === 'textures' && <>
-          {modelGroup && <button className="text-action" onClick={() => browse({ modelGroup: null, selected: null, resourceRelation: '', limit: 200 })}>返回模型分组</button>}
-          {!modelGroup && !searching && <label>展示方式<select aria-label="贴图展示方式" value={flatTextures ? 'flat' : 'groups'}
-            onChange={e => browse({ flatTextures: e.target.value === 'flat', selected: null, limit: 200 })}><option value="groups">按模型分组</option><option value="flat">平铺全部贴图</option></select></label>}
+        <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>
+        {inModels && <>
+          {modelGroup && <><button className="text-action" onClick={returnToModels}>返回模型分组</button>
+            <button className="text-action" onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${modelGroup.id}`)))}>查看材质与说明</button></>}
           {modelGroup && <label>资源类型<select aria-label="资源类型" value={resourceRelation} onChange={e => setResourceRelation(e.target.value)}>
-            <option value="">全部贴图</option><option value="bound">材质引用</option><option value="auxiliary">同目录辅助</option></select></label>}
+            <option value="">主文件与贴图</option><option value="model">模型文件</option><option value="bound">材质引用贴图</option><option value="auxiliary">辅助贴图</option></select></label>}
         </>}
         {searching && <label>候选上限<select aria-label="候选上限" value={topK} onChange={e => setTopK(+e.target.value)}>
           {[20, 50, 100, 200].map(k => <option key={k} value={k}>前 {k} 项</option>)}</select></label>}
-        <span aria-live="polite">{busy ? '更新中…' : groupedResources ? `${result.total} 个模型分组 · ${result.resource_total ?? 0} 张附属贴图（共享贴图可属于多个模型）`
+        <span aria-live="polite">{busy ? '更新中…' : groupedResources && !searching ? `${result.total} 个模型分组 · 主文件、材质与附属资源`
           : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? `${query.text && result.keyword_total !== undefined ? ` · 关键词命中 ${result.keyword_total} 项` : ''} · 返回 ${result.total} 个候选` : ''}`}</span>
       </div>
-      {summary.models > 0 && <div className="component-note">{scope === 'images' ? '独立图片不展示模型附属贴图。材质与辅助贴图请到左侧“模型附属贴图”或模型详情中查看。'
-        : groupedResources ? '点击模型分组查看材质引用、同目录辅助贴图和模型说明；原文件保持原位。'
-        : '模型附属贴图按模型自动分组；收藏、标签与虚拟集合仍可单独整理贴图。'}</div>}
+      {summary.models > 0 && <div className="component-note">{scope === 'images' ? '独立图片不展示模型附属贴图。模型文件、材质与贴图请到左侧“3D 模型”中查看。'
+        : groupedResources ? '点击模型资产组，查看 PMX / FBX / GLB / glTF 主文件、材质、附属贴图与辅助文件。'
+        : modelGroup ? '模型主文件和贴图在此分组内展示；材质绑定、文档和使用约定可在右侧模型详情中查看。'
+        : '模型文件、材质与附属贴图统一收纳在“3D 模型”；收藏、标签与虚拟集合仍可单独整理文件。'}</div>}
       {scope === 'missing' && <div className="component-note">失联表示旧路径不存在。扫描会按文件内容找回已移动的图片；多个候选且有整理信息时，请在详情选择新位置。</div>}
       {filtersOpen && <div className="filters">
         <input aria-label="文件名筛选" placeholder="文件名包含…" value={filters.name} onChange={e => { setFilters({ ...filters, name: e.target.value }); setLimit(200); }}/>
@@ -416,13 +425,13 @@ function App() {
                 style={{ transform: `translateY(${row.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))` }}>
                 {result.items.slice(row.index * columns, (row.index + 1) * columns).map(asset => <div role="button" tabIndex={0}
                   aria-label={`${groupedResources ? '模型分组' : '素材'} ${asset.name}`} key={asset.id} className={`asset-card ${selected?.id === asset.id ? 'selected' : ''} ${checked.includes(asset.id) ? 'checked' : ''}`}
-                  onClick={e => { if (groupedResources) enterModelGroup(asset); else if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); } else openAsset(asset); }}
+                  onClick={e => { if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); } else if (groupedResources) enterModelGroup(asset); else openAsset(asset); }}
                   onDoubleClick={() => { if (!multiMode && !groupedResources) { openAsset(asset); setPreview(true); } }}
-                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (groupedResources) enterModelGroup(asset); else if (multiMode) selectAsset(asset, e.shiftKey); else openAsset(asset); } }}>
+                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (multiMode) selectAsset(asset, e.shiftKey); else if (groupedResources) enterModelGroup(asset); else openAsset(asset); } }}>
                   <div className="asset-image" style={{ height: cellSize }}>
-                    {asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : <ImageIcon size={35}/>}
+                    {asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : asset.kind === 'model' ? <Box size={35}/> : <ImageIcon size={35}/>}
                     <span className="format-badge">{asset.ext}</span>
-                    {groupedResources && <span className="copy-badge">{asset.resource_count} 张贴图</span>}
+                    {groupedResources && asset.status === 'ready' && (asset.copy_count || 0) < 2 && <span className="copy-badge">模型 + {asset.resource_count || 0} 张外置贴图</span>}
                     {multiMode && <input className="selection-check" type="checkbox" aria-label={`选择 ${asset.name}`} checked={checked.includes(asset.id)}
                       onClick={e => e.stopPropagation()} onChange={() => selectAsset(asset)}/>}
                     {(asset.copy_count || 0) > 1 && <span className="copy-badge">{asset.copy_count} 份相同文件</span>}
@@ -434,7 +443,7 @@ function App() {
                     {asset.score !== undefined && (!query.text || strategy === 'semantic') && <span className="score-badge">{asset.score.toFixed(3)}</span>}
                     {asset.status !== 'ready' && <span className={`asset-state ${asset.status}`} title={asset.error || ''}>{labels[asset.status]}</span>}
                   </div>
-                  <div className="asset-caption"><strong>{asset.name}</strong><span>{groupedResources ? `引用 ${asset.bound_count} · 辅助 ${asset.auxiliary_count}` : asset.kind === 'model' ? `3D 模型${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开分组' : bytes(asset.size)}</span></div>
+                  <div className="asset-caption"><strong>{asset.name}</strong><span>{groupedResources ? `${asset.ext.toUpperCase()} · ${asset.model ? `${asset.model.materials.length} 材质` : labels[asset.status] || '准备中'}` : asset.kind === 'model' ? `模型主文件${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开资产组' : bytes(asset.size)}</span></div>
                 </div>)}
               </div>)}
             </div>
@@ -457,7 +466,7 @@ function App() {
             {selected.status === 'error' ? <><RefreshCw size={15}/> 重试索引</> : <><Sparkles size={15}/> 查找相似</>}
           </button><button title={selected.favorite ? '取消收藏' : '收藏素材'} onClick={() => run(() => patch(selected, { favorite: !selected.favorite }))}><Heart size={17} fill={selected.favorite ? 'currentColor' : 'none'}/></button></div>
           {selected.kind === 'model' && <ModelDetails asset={selected} connection={connection}/>}
-          {selected.kind === 'model' && <button className="text-action" onClick={() => enterModelGroup(selected)}>查看此模型的贴图分组</button>}
+          {selected.kind === 'model' && !modelGroup && <button className="text-action" onClick={() => enterModelGroup(selected)}>打开模型资产组</button>}
           {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属模型</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
           <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>
           <div className="detail-section"><h3>文件副本</h3>
