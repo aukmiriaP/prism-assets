@@ -147,11 +147,12 @@ class Filters(BaseModel):
 class RetryRequest(BaseModel):
     ids: list[str] = Field(default_factory=list, max_length=5000)
     filters: Filters = Field(default_factory=Filters)
+    refresh_models: bool = False
 
 
 @app.post("/assets/retry")
 def retry_assets(body: RetryRequest):
-    return app.state.catalog.retry_assets(body.ids, body.filters.model_dump())
+    return app.state.catalog.retry_assets(body.ids, body.filters.model_dump(), body.refresh_models)
 
 
 @app.post("/assets/list")

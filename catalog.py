@@ -295,15 +295,19 @@ class Catalog:
             self.scan_queue.put((jid, folders[0], retry, automatic, None))
             return {"id": jid, "status": "queued"}
 
-    def retry_assets(self, ids=None, filters=None):
-        """Queue failed files only, retaining asset IDs and all user metadata."""
+    def retry_assets(self, ids=None, filters=None, refresh_models=False):
+        """Retry failures; explicit IDs may also request a ready model preview refresh."""
         with self.lock:
+            if refresh_models and not ids:
+                raise ValueError("更新模型预览需要指定素材")
             if ids:
                 ids = list(dict.fromkeys(self.resolve_asset_id(aid) for aid in ids))
                 assets = self.rows("SELECT * FROM assets WHERE id IN (" + ",".join("?" for _ in ids) + ")", ids)
                 if len(assets) != len(ids):
                     raise ValueError("部分素材不存在，请刷新后重试")
-                assets = [a for a in assets if a["status"] == "error" and not a["excluded"] and not a["archived"]]
+                assets = [a for a in assets if not a["excluded"] and not a["archived"] and
+                          ((a["kind"] == "model" and a["status"] in ("ready", "error"))
+                           if refresh_models else a["status"] == "error")]
             else:
                 clauses, params = self.asset_filters({**(filters or {}), "status": "error"})
                 assets = self.rows("SELECT a.* FROM assets a WHERE " + " AND ".join(clauses), params)
@@ -321,7 +325,7 @@ class Catalog:
                     self.db.executemany("UPDATE assets SET status='pending',error=NULL,vector=NULL WHERE id=?",
                                         [(aid,) for aid in targets])
                     self.db.execute("INSERT INTO jobs(id,folder_id,name,status,created) VALUES(?,?,?,'queued',?)",
-                                    (jid, fid, "重试：" + folder["name"], time.time()))
+                                    (jid, fid, ("更新模型预览：" if refresh_models else "重试：") + folder["name"], time.time()))
                 self.active.add(fid)
                 self.scan_queue.put((jid, folder, False, False, targets))
                 response["queued"] += len(targets)

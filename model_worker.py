@@ -89,6 +89,54 @@ def inspect_materials(source):
     return result
 
 
+def separate_preview_layers(objects):
+    """Separate coincident material layers for Cycles, after exporting the GLB.
+
+    A transparent ray can skip the opaque surface sharing its hit position.
+    Duplicate faces are detached and offset by 0.005% of model extent per layer.
+    This changes only the temporary render mesh, not the source or viewer proxy.
+    """
+    import bmesh
+    moved = 0
+    for obj in objects:
+        mesh = obj.data
+        bm = bmesh.new()
+        try:
+            bm.from_mesh(mesh)
+            bm.normal_update()
+            low = [min(v.co[i] for v in bm.verts) for i in range(3)]
+            high = [max(v.co[i] for v in bm.verts) for i in range(3)]
+            distance = max(high[i] - low[i] for i in range(3)) * .00005
+            seen, groups = {}, {}
+            for face in list(bm.faces):
+                key = tuple(sorted(tuple(round(v, 6) for v in vertex.co) for vertex in face.verts))
+                materials = seen.setdefault(key, [])
+                if face.material_index in materials:
+                    continue
+                level = len(materials)
+                materials.append(face.material_index)
+                if level:
+                    groups.setdefault(level, []).append(face)
+            if not groups:
+                continue
+            for level, faces in groups.items():
+                duplicate = bmesh.ops.duplicate(bm, geom=faces)
+                bm.normal_update()
+                for vertex in duplicate["geom"]:
+                    if isinstance(vertex, bmesh.types.BMVert):
+                        vertex.co += vertex.normal * distance * level
+                bmesh.ops.delete(bm, geom=faces, context="FACES_ONLY")
+                moved += len(faces)
+            unused = [v for v in bm.verts if not v.link_faces]
+            if unused:
+                bmesh.ops.delete(bm, geom=unused, context="VERTS")
+            bm.to_mesh(mesh)
+            mesh.update()
+        finally:
+            bm.free()
+    return moved
+
+
 def main():
     payload = json.loads(Path(sys.argv[sys.argv.index("--") + 1]).read_text())
     source, out = Path(payload["source"]), Path(payload["output"])
@@ -153,6 +201,9 @@ def main():
     bpy.ops.export_scene.gltf(filepath=str(out / "model.glb"), export_format="GLB",
                               use_selection=True, export_animations=False, export_cameras=False,
                               export_lights=False, export_yup=True)
+    vertices = sum(len(o.data.vertices) for o in static)
+    triangles = sum(len(p.vertices) - 2 for o in static for p in o.data.polygons)
+    separated = separate_preview_layers(static) if ext == ".pmx" else 0
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.samples = 16
@@ -185,8 +236,8 @@ def main():
         scene.render.filepath = str(out / f"view-{index}.png")
         bpy.ops.render.render(write_still=True)
     metadata = {"name": payload.get("pmx", {}).get("name", source.stem),
-                "format": ext[1:], "vertices": sum(len(o.data.vertices) for o in static),
-                "triangles": sum(len(p.vertices) - 2 for o in static for p in o.data.polygons),
+                "format": ext[1:], "vertices": vertices, "triangles": triangles,
+                "preview_coplanar_faces": separated,
                 "meshes": len(static), "materials": materials,
                 "bones": payload.get("pmx", {}).get("bones"),
                 "comment": payload.get("pmx", {}).get("comment", ""),

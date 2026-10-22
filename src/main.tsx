@@ -272,11 +272,12 @@ function App() {
   };
   const similar = (asset: Asset) => search({ asset_id: asset.id, label: asset.name });
   const scan = (f: FolderType) => run(async () => { await api(`/folders/${f.id}/scan`, 'POST', { retry: true }); await loadSummary(); setTasksOpen(true); });
-  const retry = (ids?: string[]) => run(async () => {
+  const retry = (ids?: string[], refreshModels = false) => run(async () => {
     setRetryBusy(true);
     try {
       const data = await api<{ queued: number; busy: number }>('/assets/retry', 'POST', {
-        ids: ids || [], filters: { ...filters, folder_id: folder?.id || '', collection_id: collection?.id || '',
+        ids: ids || [], refresh_models: refreshModels,
+        filters: { ...filters, folder_id: folder?.id || '', collection_id: collection?.id || '',
           tag: activeTag, favorite: scope === 'favorites',
           kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : '',
           include_components: Boolean(modelGroup), model_id: modelGroup?.id || '',
@@ -284,8 +285,8 @@ function App() {
           include_model: Boolean(modelGroup) && (!resourceRelation || resourceRelation === 'model'),
           exclude_components: scope === 'images' },
       });
-      notify(data.queued ? `已安排 ${data.queued} 项重试${data.busy ? `；另 ${data.busy} 项所在目录正在索引` : ''}`
-        : data.busy ? `${data.busy} 项所在目录正在索引，请完成后重试` : '当前没有可重试的失败项');
+      notify(data.queued ? `已安排 ${data.queued} 项${refreshModels ? '预览更新' : '重试'}${data.busy ? `；另 ${data.busy} 项所在目录正在索引` : ''}`
+        : data.busy ? `${data.busy} 项所在目录正在索引，请完成后重试` : refreshModels ? '当前没有可更新预览的模型' : '当前没有可重试的失败项');
       await loadSummary();
       setRefresh(n => n + 1);
       if (data.queued) setTasksOpen(true);
@@ -564,6 +565,9 @@ function App() {
             : selected.status !== 'ready'} onClick={() => selected.status === 'error' ? retry([selected.id]) : similar(selected)}>
             {selected.status === 'error' ? <><RefreshCw size={15}/> 重试索引</> : <><Sparkles size={15}/> 查找相似</>}
           </button><button title={selected.favorite ? '取消收藏' : '收藏素材'} onClick={() => run(() => patch(selected, { favorite: !selected.favorite }))}><Heart size={17} fill={selected.favorite ? 'currentColor' : 'none'}/></button></div>
+          {selected.kind === 'model' && selected.status !== 'error' && <button className="text-action" title="重新生成此模型的封面与检索预览，保留标签、收藏和集合"
+            disabled={selected.status !== 'ready' || retryBusy || summary.jobs.some(j => j.folder_id === selected.folder_id && ['queued', 'running'].includes(j.status))}
+            onClick={() => retry([selected.id], true)}><RefreshCw size={13}/>重新生成预览</button>}
           {selected.kind === 'model' && <ModelDetails asset={selected} connection={connection}/>}
           {selected.kind === 'model' && !modelGroup && <button className="text-action" onClick={() => enterModelGroup(selected)}>打开模型资产组</button>}
           {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属模型</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}

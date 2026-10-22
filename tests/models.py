@@ -105,6 +105,27 @@ def main():
         assert client.get(f"/assets/{gltf['id']}/resources/0/preview?token={app_server.TOKEN}").status_code == 200
         assert client.get(f"/assets/{gltf['id']}/resources/99999/preview?token={app_server.TOKEN}").status_code == 404
         assert client.post("/search", headers=auth, json={"asset_id": gltf["id"], "filters": {"kind": "model"}}).status_code == 200
+        # Preview refresh explicitly targets a ready model; ordinary retry remains failure-only.
+        retry_url = "/assets/retry"
+        assert client.post(retry_url, headers=auth, json={"refresh_models": True}).status_code == 400
+        assert client.post(retry_url, headers=auth, json={"ids": [gltf["id"]]}).json()["queued"] == 0
+        image = catalog.rows("SELECT id FROM assets WHERE kind='image' AND status='ready' LIMIT 1")[0]
+        assert client.post(retry_url, headers=auth,
+                           json={"ids": [image["id"]], "refresh_models": True}).json()["queued"] == 0
+        calls = inference.calls
+        untargeted_thumbnail = catalog.get_asset(by_name["sphere.glb"]["id"])["thumbnail"]
+        response = client.post(retry_url, headers=auth,
+                               json={"ids": [gltf["id"]], "refresh_models": True})
+        assert response.status_code == 200 and response.json()["queued"] == 1
+        settle(catalog)
+        refreshed = catalog.get_asset(gltf["id"])
+        assert refreshed["thumbnail"] != changed["thumbnail"]
+        assert refreshed["hash"] == changed["hash"]
+        assert refreshed["id"] == changed["id"] and refreshed["tags"] == changed["tags"]
+        assert refreshed["favorite"] and refreshed["collections"][0]["id"] == collection["id"]
+        assert inference.calls == calls + 2, "Refresh must encode only the two target model views"
+        assert catalog.get_asset(by_name["sphere.glb"]["id"])["thumbnail"] == untargeted_thumbnail
+        changed = refreshed
         close(catalog)
         catalog = Catalog(base / "library", inference=inference, watch=False)
         settle(catalog)
@@ -122,6 +143,7 @@ def main():
             "FBX/GLB/glTF actual conversion", "embedded/external bindings", "missing texture fallback",
             "corrupt PMX isolation", "authenticated GLB/CORS/resource endpoints", "model similar search",
             "unchanged scan reuse", "texture change invalidation", "tags/favorites/collections retained",
+            "explicit ready-model preview refresh; image/whole-scope refresh rejected",
             "restart cache persistence", "missing model releases child images"]}), flush=True)
     finally:
         close(catalog)
