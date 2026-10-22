@@ -102,16 +102,18 @@ def exclusions(fid: str, body: ExclusionsRequest):
 
 class CollectionRequest(BaseModel):
     name: str = Field(min_length=1, max_length=64)
+    parent_id: str | None = Field(default=None, max_length=128)
 
 
 @app.post("/collections")
 def create_collection(body: CollectionRequest):
-    return app.state.catalog.save_collection(body.name)
+    return app.state.catalog.save_collection(body.name, parent_id=body.parent_id)
 
 
 @app.patch("/collections/{cid}")
 def rename_collection(cid: str, body: CollectionRequest):
-    return app.state.catalog.save_collection(body.name, cid)
+    return app.state.catalog.save_collection(body.name, cid, parent_id=body.parent_id,
+                                            change_parent="parent_id" in body.model_fields_set)
 
 
 @app.delete("/collections/{cid}")

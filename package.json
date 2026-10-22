@@ -13,6 +13,7 @@
     "package": "npm run build && node scripts/package.cjs",
     "test:backend": ".venv/bin/python tests/integration.py",
     "test:governance": ".venv/bin/python tests/governance.py",
+    "test:collections": ".venv/bin/python tests/collections.py",
     "test:models": ".venv/bin/python tests/models.py",
     "test:retry": ".venv/bin/python tests/retry.py",
     "test:retry-ui": "node tests/retry-ui.cjs",

@@ -7,7 +7,7 @@ import { Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight,
   ImagePlus, LoaderCircle, Maximize2, RefreshCw, Search, Settings2, SlidersHorizontal,
   Sparkles, Tag, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { Asset, Collection, Connection, Folder as FolderType, Result, SearchStrategy, Summary } from './types';
-import { CollectionEditor, ExclusionEditor } from './organization';
+import { CollectionEditor, CollectionTree, ExclusionEditor, orderedCollections } from './organization';
 import { ModelDetails, ModelViewer } from './model-viewer';
 import { listLocation, useNavigation, type BrowseView } from './navigation';
 import { ViewResults } from './view-results';
@@ -62,6 +62,7 @@ function App() {
   const [recoveryBusy, setRecoveryBusy] = useState(false);
   const [collectionEditor, setCollectionEditor] = useState<Collection | 'new' | null>(null);
   const [collectionIntent, setCollectionIntent] = useState<'navigation' | 'bulk' | 'detail'>('navigation');
+  const [newCollectionParent, setNewCollectionParent] = useState<string | null>(null);
   const [exclusionEditor, setExclusionEditor] = useState<FolderType | null>(null);
   const [copies, setCopies] = useState<Asset[] | null>(null);
   const anchor = useRef<string | null>(null);
@@ -78,7 +79,10 @@ function App() {
   const groupedResources = inModels && !modelGroup;
   const folder = summary?.folders.find(f => f.id === scope);
   const collection = summary?.collections.find(c => `collection:${c.id}` === scope);
-  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || '全部素材'));
+  const collectionOptions = orderedCollections(summary?.collections || []);
+  const collectionAncestors = collection?.ancestor_ids?.map(id => summary?.collections.find(c => c.id === id)).filter((c): c is Collection => Boolean(c)) || [];
+  const childCollections = summary?.collections.filter(c => c.parent_id === collection?.id) || [];
+  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || (scope.startsWith('collection:') ? '已删除集合' : '全部素材')));
   const checkedAssets = result.items.filter(a => checked.includes(a.id));
   const checkedIds = [...new Set(checkedAssets.flatMap(a => a.member_ids || [a.id]))];
   const columns = Math.max(2, Math.floor((gridWidth - 48) / (cardSize + 14)));
@@ -157,7 +161,7 @@ function App() {
       model_id: view.modelGroup?.id || '', relation: view.resourceRelation === 'model' ? '' : view.resourceRelation,
       include_model: Boolean(view.modelGroup) && (!view.resourceRelation || view.resourceRelation === 'model'),
       group_duplicates: groupDuplicates,
-      collection_id: summary?.collections.find(c => `collection:${c.id}` === view.scope)?.id || '',
+      collection_id: view.scope.startsWith('collection:') ? view.scope.slice('collection:'.length) : '',
       tag: view.activeTag, favorite: view.scope === 'favorites',
       status: ['error', 'missing'].includes(view.scope) ? view.scope : '',
       folder_id: summary?.folders.find(f => f.id === view.scope)?.id || '' };
@@ -349,11 +353,14 @@ function App() {
       const updated = await api<Asset>(`/assets/${asset.id}`);
       setSelected(old => old?.id === asset.id ? updated : old);
       await loadSummary(); setRefresh(n => n + 1);
-      notify(`已加入集合「${target.name}」`);
+      notify(`已加入集合「${target.path}」`);
     } finally { setOrganizeBusy(false); }
   });
-  const newCollection = (intent: 'navigation' | 'bulk' | 'detail' = 'navigation') => {
-    setCollectionIntent(intent); setCollectionEditor('new');
+  const newCollection = (intent: 'navigation' | 'bulk' | 'detail' = 'navigation', parentId: string | null = null) => {
+    setNewCollectionParent(parentId); setCollectionIntent(intent); setCollectionEditor('new');
+  };
+  const editCollection = (item: Collection) => {
+    setCollectionIntent('navigation'); setCollectionEditor(item);
   };
 
   if (fatal) return <div className="boot"><Aperture size={40}/><h1>本地服务暂不可用</h1><p>{fatal}</p><button className="primary" onClick={() => window.prism.restart()}>重新启动应用</button></div>;
@@ -380,9 +387,8 @@ function App() {
         {f.status === 'online' ? <Folder size={16}/> : <TriangleAlert size={16}/>}<b>{f.name}</b><span title="目录内文件总数，包含附属贴图">{f.count}</span></button>)
         : <p className="nav-empty">关联文件夹后，素材会出现在这里</p>}</nav>
       <div className="nav-label">虚拟集合<button title="新建集合" onClick={() => newCollection()}><FolderPlus size={14}/></button></div>
-      <nav className="collection-nav">{summary.collections.length ? summary.collections.map(c => <button key={c.id} title={`${c.count} 个文件`}
-        className={collection?.id === c.id ? 'active' : ''} onClick={() => chooseScope(`collection:${c.id}`)}>
-        <Folder size={16}/><b>{c.name}</b><span>{c.count}</span></button>) : <p className="nav-empty">按项目或主题收集素材</p>}</nav>
+      <nav className="collection-nav" aria-label="集合树"><CollectionTree collections={summary.collections} activeId={collection?.id}
+        open={id => chooseScope(`collection:${id}`)} create={id => newCollection('navigation', id)} edit={editCollection}/></nav>
       <div className="nav-label">标签<span>{summary.tags.length || ''}</span></div>
       <div className="tag-nav">{summary.tags.length ? summary.tags.map(t => <button className={activeTag === t.name ? 'active' : ''}
         key={t.name} onClick={() => chooseScope('all', t.name)}><i/> {t.name}<span>{t.count}</span></button>)
@@ -396,7 +402,10 @@ function App() {
     </aside>
     <section className="workspace">
       <header className="topbar">
-        <div className="breadcrumb">素材库 <ChevronRight size={13}/>{inModels && modelGroup && <>3D 模型 <ChevronRight size={13}/></>} <strong>{title}</strong></div>
+        <div className="breadcrumb" aria-label="当前位置">素材库 <ChevronRight size={13}/>
+          {collectionAncestors.map(c => <React.Fragment key={c.id}><button aria-label={`上级集合 ${c.name}`} title={c.path}
+            onClick={() => chooseScope(`collection:${c.id}`)}>{c.name}</button><ChevronRight size={13}/></React.Fragment>)}
+          {inModels && modelGroup && <>3D 模型 <ChevronRight size={13}/></>} <strong>{title}</strong></div>
         <button className={`task-toggle ${running ? 'working' : ''}`} onClick={() => setTasksOpen(v => !v)}>
           {running ? <LoaderCircle size={15} className="spin"/> : <Check size={15}/>}
           {running ? `正在索引 ${running.done}/${running.total || '…'}` : '索引任务'}</button>
@@ -426,13 +435,20 @@ function App() {
       <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span>}</h1></div>
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
           <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
-          {collection && <button onClick={() => { setCollectionIntent('navigation'); setCollectionEditor(collection); }}>管理集合</button>}
+          {collection && <><button onClick={() => newCollection('navigation', collection.id)}><FolderPlus size={14}/>新建子集合</button>
+            <button onClick={() => editCollection(collection)}>管理集合</button></>}
           {scope === 'error' && !searching && <button disabled={retryBusy || !result.total} onClick={() => retry()}><RefreshCw size={15}/> 重试当前范围</button>}
           {scope === 'missing' && <button disabled={recoveryBusy || Boolean(running)} onClick={recover}><RefreshCw size={15}/> 查找已移动文件</button>}
           <button className={filtersOpen ? 'selected-control' : ''} onClick={() => setFiltersOpen(v => !v)}><SlidersHorizontal size={15}/> 筛选</button>
           {folder && <button title="重新扫描此目录" onClick={() => scan(folder)}><RefreshCw size={16}/></button>}
         </div>
       </div>
+      {collection && !searching && childCollections.length > 0 && <section className="child-collections" aria-label="直属子集合">
+        <span>子集合 · {childCollections.length}</span><div>{childCollections.map(c => <button key={c.id} title={c.path}
+          aria-label={`进入子集合 ${c.name}`} onClick={() => chooseScope(`collection:${c.id}`)}><Folder size={17}/>
+          <b>{c.name}</b><small>{c.child_count} 个子集合 · {c.count} 个直属文件</small><ChevronRight size={14}/></button>)}</div>
+      </section>}
+      {collection && <div className="component-note collection-scope-note">素材列表与计数仅包含直接加入此集合的文件；子集合素材请进入对应子集合查看。</div>}
       {searching && <div className="query-chip"><span>{query.text ? <Search size={13}/> : <ImageIcon size={13}/>} {query.text || query.label}</span><button onClick={clearSearch}><X size={13}/> 退出搜索</button><small>{query.text && strategy !== 'semantic'
         ? strategy === 'keyword' ? '仅显示元数据关键词命中' : '关键词命中优先，其余为语义候选'
         : '按余弦相似度排序；分数不代表正确概率'}</small></div>}
@@ -483,9 +499,9 @@ function App() {
             onClick={() => retry(checkedIds)}>重试选中失败项</button>}
           <div className="bulk-action-group" aria-label="批量集合操作"><span className="action-group-label">虚拟集合</span>
           <select aria-label="目标集合" disabled={!summary.collections.length} value={summary.collections.some(c => c.id === bulkCollection) ? bulkCollection : ''} onChange={e => setBulkCollection(e.target.value)}>
-            <option value="">{summary.collections.length ? '选择集合…' : '尚无集合，请先新建'}</option>{summary.collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+            <option value="">{summary.collections.length ? '选择集合…' : '尚无集合，请先新建'}</option>{collectionOptions.map(c => <option key={c.id} value={c.id}>{c.path}</option>)}</select>
           <button disabled={!checkedIds.length || !summary.collections.some(c => c.id === bulkCollection) || busy || bulkBusy} onClick={() => bulk({ collection_id: bulkCollection })}>加入集合</button>
-          <button aria-label="批量新建集合" onClick={() => newCollection('bulk')}>新建集合</button>
+          <button aria-label="批量新建集合" onClick={() => newCollection('bulk', collection?.id || null)}>新建集合</button>
           {collection && <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ collection_id: collection.id, collection_action: 'remove' })}>移出当前集合</button>}
           </div>
         </div>
@@ -495,7 +511,8 @@ function App() {
           {loading && <div className="loading-line"/>}
           {result.items.length === 0 ? busy ? loading ? <div className="gallery-read-state" role="status">
             <LoaderCircle className="spin" size={17}/>{searching ? summary.model === 'loading' ? '正在准备本地模型…' : '正在搜索…' : '正在读取素材列表…'}
-          </div> : null : <div className="empty">
+          </div> : null : collection && !searching ? <div className="collection-empty"><FolderOpen size={30}/>
+            <h2>本集合还没有直属素材</h2><p>{childCollections.length ? '点击上方子集合继续浏览，或从素材详情与多选栏加入文件。' : '从素材详情与多选栏加入文件，或点击“新建子集合”继续组织。'}</p></div> : <div className="empty">
             <div className="empty-art"><div/><div/><div><Aperture size={42}/></div></div>
             <div className="eyebrow">{summary.folders.length ? 'ROOM FOR DISCOVERY' : 'A HOME FOR YOUR IDEAS'}</div>
             <h2>{!summary.folders.length ? '让灵感，有迹可循。' : running ? '你的素材正在入库' : '这里还没有匹配的素材'}</h2>
@@ -557,12 +574,13 @@ function App() {
             {copies && <div className="copy-list">{copies.map(a => <div key={a.id}><p>{a.path}</p><button onClick={() => window.prism.reveal(a.path)}>定位</button>
               <button onClick={() => run(async () => { openAsset(await api<Asset>(`/assets/${a.id}`)); })}>详情</button></div>)}</div>}
           </div>
-          <div className="detail-section"><h3>所在集合</h3><div className="collection-chips">{selected.collections?.map(c => <button className="text-action" key={c.id} onClick={() => chooseScope(`collection:${c.id}`)}>{c.name}</button>)}</div>
+          <div className="detail-section"><h3>所在集合</h3><div className="collection-chips">{selected.collections?.filter(c => summary.collections.some(item => item.id === c.id)).map(c => <button className="text-action" key={c.id} onClick={() => chooseScope(`collection:${c.id}`)}>
+            {summary.collections.find(item => item.id === c.id)?.path || c.path || c.name}</button>)}</div>
             <div className="detail-organize-controls"><select aria-label="详情目标集合" disabled={organizeBusy || !summary.collections.length}
               value={summary.collections.some(c => c.id === detailCollection) ? detailCollection : ''} onChange={e => setDetailCollection(e.target.value)}>
-              <option value="">{summary.collections.length ? '选择集合…' : '尚无集合'}</option>{summary.collections.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select>
+              <option value="">{summary.collections.length ? '选择集合…' : '尚无集合'}</option>{collectionOptions.map(c => <option key={c.id} value={c.id}>{c.path}</option>)}</select>
               <button disabled={organizeBusy || !summary.collections.some(c => c.id === detailCollection)} onClick={joinDetailCollection}>加入当前素材</button></div>
-            <button className="text-action" aria-label="详情新建集合" onClick={() => newCollection('detail')}>新建集合</button>
+            <button className="text-action" aria-label="详情新建集合" onClick={() => newCollection('detail', detailCollection || collection?.id || null)}>新建集合</button>
             <button className="text-action bulk-detail-entry" title="选择此素材后，通过批量工具栏添加标签、收藏或加入集合" onClick={() => {
               const item = result.items.find(a => (a.member_ids || [a.id]).includes(selected.id));
               if (item) { setMultiMode(true); setChecked([item.id]); }
@@ -601,12 +619,14 @@ function App() {
       <h3>本地数据</h3><p className="settings-copy">索引、标签、收藏和缩略图存放在下方目录。备份前请退出应用，再复制整个目录。</p><button className="data-path" onClick={() => window.prism.reveal(summary.data_dir)}>{summary.data_dir}<FolderOpen size={15}/></button>
       <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型的两张外观预览图，不判断拓扑或动作。PMX 展示基础材质，MMD 特效不完整还原；当前不播放动画。图片限制 100 MB / 4000 万像素，模型限制 512 MB。暂不解析视频与 PSD。</p></div>
     </section></div>}
-    {collectionEditor && <CollectionEditor collection={collectionEditor === 'new' ? undefined : collectionEditor} close={() => setCollectionEditor(null)}
+    {collectionEditor && <CollectionEditor collection={collectionEditor === 'new' ? undefined : collectionEditor}
+      collections={summary.collections} parentId={newCollectionParent} close={() => setCollectionEditor(null)}
       saved={async (id, deleted) => {
         resultCache.current.clear(); await loadSummary(); setRefresh(n => n + 1);
         if (!deleted && collectionIntent === 'bulk') setBulkCollection(id || '');
         else if (!deleted && collectionIntent === 'detail') setDetailCollection(id || '');
-        else chooseScope(deleted ? 'all' : `collection:${id}`);
+        else if (deleted && collection?.id === id) chooseScope(collectionEditor !== 'new' && collectionEditor.parent_id ? `collection:${collectionEditor.parent_id}` : 'all');
+        else if (!deleted && collectionEditor === 'new') chooseScope(`collection:${id}`);
       }}/>}
     {exclusionEditor && <ExclusionEditor folder={exclusionEditor} close={() => setExclusionEditor(null)}
       saved={async () => { await loadSummary(); setRefresh(n => n + 1); setChecked([]); setSelected(null); }}/>}

@@ -7,7 +7,7 @@ export type Asset = {
   tags: string[]; favorite: boolean; status: string; error: string | null;
   score?: number; added: number; copy_count?: number; member_ids?: string[];
   match_kind?: 'keyword' | 'semantic' | 'both'; keyword_fields?: string[];
-  collections?: { id: string; name: string }[];
+  collections?: { id: string; name: string; parent_id?: string | null; path?: string }[];
   resource_count?: number; bound_count?: number; auxiliary_count?: number;
   recovery_candidates?: Asset[];
   history?: { old_path: string; action: string; created: number }[];
@@ -21,7 +21,8 @@ export type ModelInfo = { name: string; cache: string; vertices: number; triangl
   resources: ModelResource[] };
 export type Folder = { id: string; name: string; path: string; count: number; status: string;
   exclusions: string[]; excluded_count: number };
-export type Collection = { id: string; name: string; count: number };
+export type Collection = { id: string; name: string; count: number; parent_id: string | null;
+  path: string; ancestor_ids: string[]; child_count: number };
 export type Job = { id: string; folder_id: string; name: string; status: string; total: number;
   done: number; failed: number; error: string | null; created: number };
 export type Summary = { total: number; favorites: number; counts: Record<string, number>;

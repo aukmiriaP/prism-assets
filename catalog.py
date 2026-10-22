@@ -99,7 +99,8 @@ class Catalog:
                 name TEXT,status TEXT,total INTEGER DEFAULT 0,done INTEGER DEFAULT 0,
                 failed INTEGER DEFAULT 0,error TEXT,created REAL,finished REAL);
             CREATE TABLE IF NOT EXISTS collections(
-                id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE UNIQUE,created REAL);
+                id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE,created REAL,
+                parent_id TEXT REFERENCES collections(id) ON DELETE RESTRICT);
             CREATE TABLE IF NOT EXISTS collection_assets(
                 collection_id TEXT REFERENCES collections(id) ON DELETE CASCADE,
                 asset_id TEXT REFERENCES assets(id) ON DELETE CASCADE,
@@ -111,6 +112,7 @@ class Catalog:
                 PRIMARY KEY(model_id,path));
             CREATE INDEX IF NOT EXISTS resource_path ON model_resources(path);
         """)
+        self.migrate_collections()
         # Additive migration: preserve IDs, vectors, tags, favorites and paths.
         for table, column, declaration in [
             ("folders", "exclusions", "TEXT NOT NULL DEFAULT '[]'"),
@@ -653,8 +655,13 @@ class Catalog:
         if not rows:
             raise ValueError("素材不存在")
         item = self.public(rows[0])
-        item["collections"] = self.rows("""SELECT c.id,c.name FROM collections c JOIN collection_assets ca
-            ON ca.collection_id=c.id WHERE ca.asset_id=? ORDER BY c.name""", (aid,))
+        with self.lock:
+            item["collections"] = self.rows("""SELECT c.id,c.name,c.parent_id FROM collections c JOIN collection_assets ca
+                ON ca.collection_id=c.id WHERE ca.asset_id=? ORDER BY c.name""", (aid,))
+            if item["collections"]:
+                collection_paths = {c["id"]: c["path"] for c in self.collection_records()}
+                for collection in item["collections"]:
+                    collection["path"] = collection_paths[collection["id"]]
         item["owners"] = self.rows("""SELECT a.id,a.name,r.relation FROM model_resources r JOIN assets a ON a.id=r.model_id
             WHERE r.path=? AND a.status!='missing' AND a.excluded=0 AND a.archived=0""", (item["path"],))
         if item["kind"] == "model":
@@ -769,9 +776,10 @@ class Catalog:
                 WHERE parent.excluded=0 AND parent.archived=0 AND parent.status!='missing'"""):
                 owners.setdefault(row["path"], []).extend([row["name"], row["model_name"] or ""])
             collections = {}
-            for row in self.rows("""SELECT ca.asset_id,c.name FROM collection_assets ca
+            collection_paths = {c["id"]: c["path"] for c in self.collection_records()}
+            for row in self.rows("""SELECT ca.asset_id,c.id FROM collection_assets ca
                 JOIN collections c ON c.id=ca.collection_id"""):
-                collections.setdefault(row["asset_id"], []).append(row["name"])
+                collections.setdefault(row["asset_id"], []).append(collection_paths[row["id"]])
             groups, by_id = {}, {}
             rows = self.rows("""SELECT a.id,a.path,a.name,a.kind,a.tags,a.hash,a.status,a.added,
                 json_extract(a.model_data,'$.name') model_name,f.path linked_root
@@ -927,26 +935,99 @@ class Catalog:
                                         [(cid, aid) for aid in ids])
         return {"updated": len(ids)}
 
-    def save_collection(self, name, cid=None):
+    def migrate_collections(self):
+        """Rebuild the legacy global-name constraint without cascading memberships."""
+        if "parent_id" not in {r["name"] for r in self.rows("PRAGMA table_info(collections)")}:
+            backup_path = self.root / "catalog-before-collection-tree.sqlite3"
+            if not backup_path.exists():
+                with sqlite3.connect(backup_path) as backup:
+                    self.db.backup(backup)
+            self.db.commit()
+            self.db.execute("PRAGMA foreign_keys=OFF")
+            try:
+                self.db.executescript("""
+                    BEGIN IMMEDIATE;
+                    CREATE TABLE collections_tree(
+                        id TEXT PRIMARY KEY,name TEXT NOT NULL COLLATE NOCASE,created REAL,
+                        parent_id TEXT REFERENCES collections_tree(id) ON DELETE RESTRICT);
+                    INSERT INTO collections_tree(id,name,created) SELECT id,name,created FROM collections;
+                    DROP TABLE collections;
+                    ALTER TABLE collections_tree RENAME TO collections;
+                    COMMIT;
+                """)
+            except Exception:
+                self.db.rollback()
+                raise
+            finally:
+                self.db.execute("PRAGMA foreign_keys=ON")
+        self.execute("""CREATE UNIQUE INDEX IF NOT EXISTS collection_sibling_name
+            ON collections(coalesce(parent_id,''),name COLLATE NOCASE)""")
+        self.execute("CREATE INDEX IF NOT EXISTS collection_parent ON collections(parent_id)")
+
+    def collection_records(self, counts=False):
+        """Return flat records with complete paths; membership counts are direct only."""
+        with self.lock:
+            if counts:
+                records = self.rows("""SELECT c.*,count(a.id) count FROM collections c
+                    LEFT JOIN collection_assets ca ON ca.collection_id=c.id
+                    LEFT JOIN assets a ON a.id=ca.asset_id AND a.excluded=0 AND a.archived=0 AND a.status!='missing'
+                    GROUP BY c.id ORDER BY c.name COLLATE NOCASE,c.id""")
+            else:
+                records = self.rows("SELECT * FROM collections ORDER BY name COLLATE NOCASE,id")
+            by_id = {c["id"]: c for c in records}
+            children = {}
+            for record in records:
+                children[record["parent_id"]] = children.get(record["parent_id"], 0) + 1
+            paths = {}
+            for record in records:
+                trail, seen, current = [], set(), record
+                while current and current["id"] not in paths:
+                    if current["id"] in seen:
+                        raise ValueError("集合层级存在循环")
+                    seen.add(current["id"])
+                    trail.append(current)
+                    current = by_id.get(current["parent_id"])
+                prefix = paths[current["id"]] if current else []
+                for ancestor in reversed(trail):
+                    prefix = prefix + [ancestor["id"]]
+                    paths[ancestor["id"]] = prefix
+                record["ancestor_ids"] = paths[record["id"]][:-1]
+                record["path"] = " / ".join(by_id[aid]["name"] for aid in paths[record["id"]])
+                record["child_count"] = children.get(record["id"], 0)
+            return records
+
+    def save_collection(self, name, cid=None, parent_id=None, *, change_parent=False):
         name = name.strip()
         if not name or len(name) > 64:
             raise ValueError("集合名称需要 1–64 个字符")
         with self.lock, self.db:
-            if cid and not self.rows("SELECT id FROM collections WHERE id=?", (cid,)):
+            records = {c["id"]: c for c in self.collection_records()}
+            if cid and cid not in records:
                 raise ValueError("集合不存在")
+            if cid and not change_parent:
+                parent_id = records[cid]["parent_id"]
+            parent_id = parent_id or None
+            if parent_id and parent_id not in records:
+                raise ValueError("父集合不存在")
+            if cid and parent_id and (parent_id == cid or cid in records[parent_id]["ancestor_ids"]):
+                raise ValueError("不能将集合放入自身或其子集合")
             try:
                 if cid:
-                    self.db.execute("UPDATE collections SET name=? WHERE id=?", (name, cid))
+                    self.db.execute("UPDATE collections SET name=?,parent_id=? WHERE id=?", (name, parent_id, cid))
                 else:
                     cid = uuid.uuid4().hex
-                    self.db.execute("INSERT INTO collections VALUES(?,?,?)", (cid, name, time.time()))
+                    self.db.execute("INSERT INTO collections(id,name,created,parent_id) VALUES(?,?,?,?)",
+                                    (cid, name, time.time(), parent_id))
             except sqlite3.IntegrityError as exc:
-                raise ValueError("已存在同名集合") from exc
-        return self.rows("SELECT * FROM collections WHERE id=?", (cid,))[0]
+                raise ValueError("同一父集合下已存在同名集合") from exc
+            return next(c for c in self.collection_records() if c["id"] == cid)
 
     def remove_collection(self, cid):
-        if not self.execute("DELETE FROM collections WHERE id=?", (cid,)):
-            raise ValueError("集合不存在")
+        with self.lock, self.db:
+            if self.rows("SELECT id FROM collections WHERE parent_id=? LIMIT 1", (cid,)):
+                raise ValueError("此集合包含子集合，请先移出或删除子集合")
+            if not self.db.execute("DELETE FROM collections WHERE id=?", (cid,)).rowcount:
+                raise ValueError("集合不存在")
 
     def update_asset(self, aid, changes):
         with self.lock, self.db:
@@ -969,10 +1050,7 @@ class Catalog:
             folder["excluded_count"] = self.rows("SELECT count(*) n FROM assets WHERE folder_id=? AND excluded=1 AND archived=0", (folder["id"],))[0]["n"]
         tags = self.rows("""SELECT j.value AS name,count(*) AS count FROM assets a,json_each(a.tags) j
             WHERE a.status!='missing' AND a.excluded=0 AND a.archived=0 GROUP BY j.value ORDER BY count DESC,j.value LIMIT 100""")
-        collections = self.rows("""SELECT c.*,count(a.id) count FROM collections c
-            LEFT JOIN collection_assets ca ON ca.collection_id=c.id
-            LEFT JOIN assets a ON a.id=ca.asset_id AND a.excluded=0 AND a.archived=0 AND a.status!='missing'
-            GROUP BY c.id ORDER BY c.name COLLATE NOCASE,c.id""")
+        collections = self.collection_records(counts=True)
         return {"counts": counts, "total": sum(v for k, v in counts.items() if k != "missing"),
                 "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.archived=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
