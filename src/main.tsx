@@ -2,15 +2,17 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Aperture, ArrowDownUp, ArrowRight, Box, Check, ChevronRight, CircleHelp, Copy,
+import { Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight, CircleHelp, Copy,
   Folder, FolderOpen, FolderPlus, Grid2X2, HardDrive, Heart, Image as ImageIcon,
   ImagePlus, LoaderCircle, Maximize2, RefreshCw, Search, Settings2, SlidersHorizontal,
   Sparkles, Tag, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { Asset, Collection, Connection, Folder as FolderType, Result, Summary } from './types';
 import { CollectionEditor, ExclusionEditor } from './organization';
 import { ModelDetails, ModelViewer } from './model-viewer';
+import { listLocation, useNavigation, type BrowseView } from './navigation';
 import './style.css';
 import './organization.css';
+import './navigation.css';
 
 const api = <T,>(route: string, method?: string, body?: unknown) => window.prism.api<T>(route, method, body);
 const bytes = (n: number) => n > 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
@@ -22,23 +24,23 @@ function App() {
   const [connection, setConnection] = useState<Connection | null>(null);
   const [fatal, setFatal] = useState('');
   const [summary, setSummary] = useState<Summary | null>(null);
-  const [scope, setScope] = useState('all');
-  const [activeTag, setActiveTag] = useState('');
-  const [draft, setDraft] = useState('');
-  const [query, setQuery] = useState<{ text?: string; image_path?: string; asset_id?: string; label?: string }>({});
+  const navigation = useNavigation();
+  const { scope, activeTag, draft, query, selected, filtersOpen, filters, limit,
+    modelGroup, flatTextures, resourceRelation } = navigation.view;
+  const field = <K extends keyof BrowseView>(key: K) =>
+    (value: React.SetStateAction<BrowseView[K]>) => navigation.update(key, value);
+  const setActiveTag = field('activeTag'), setDraft = field('draft'), setSelected = field('selected');
+  const setFiltersOpen = field('filtersOpen'), setFilters = field('filters'), setLimit = field('limit');
+  const setResourceRelation = field('resourceRelation');
   const [result, setResult] = useState<Result>({ items: [], total: 0 });
-  const [selected, setSelected] = useState<Asset | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
-  const [filtersOpen, setFiltersOpen] = useState(false);
-  const [filters, setFilters] = useState({ name: '', ext: '', min_width: 0, sort: 'newest' });
   const [tasksOpen, setTasksOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [preview, setPreview] = useState(false);
   const [previewError, setPreviewError] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [cardSize, setCardSize] = useState(205);
-  const [limit, setLimit] = useState(200);
   const [refresh, setRefresh] = useState(0);
   const [tagDraft, setTagDraft] = useState('');
   const [topK, setTopK] = useState(50);
@@ -50,9 +52,6 @@ function App() {
   const [bulkBusy, setBulkBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
   const [recoveryBusy, setRecoveryBusy] = useState(false);
-  const [modelGroup, setModelGroup] = useState<Asset | null>(null);
-  const [flatTextures, setFlatTextures] = useState(false);
-  const [resourceRelation, setResourceRelation] = useState('');
   const [collectionEditor, setCollectionEditor] = useState<Collection | 'new' | null>(null);
   const [exclusionEditor, setExclusionEditor] = useState<FolderType | null>(null);
   const [copies, setCopies] = useState<Asset[] | null>(null);
@@ -61,6 +60,7 @@ function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [gridWidth, setGridWidth] = useState(800);
   const requestId = useRef(0);
+  const restoreScroll = useRef<number | null>(null);
   const searching = Boolean(query.text || query.image_path || query.asset_id);
   const groupedResources = scope === 'textures' && !flatTextures && !modelGroup && !searching;
   const folder = summary?.folders.find(f => f.id === scope);
@@ -121,6 +121,12 @@ function App() {
   useEffect(() => { virtual.measure(); }, [cellSize, columns]);
   useEffect(() => { setChecked([]); anchor.current = null; }, [scope, activeTag, query, filters, groupDuplicates, topK, modelGroup, resourceRelation, flatTextures]);
   useEffect(() => { setCopies(null); }, [selected?.id]);
+  useEffect(() => {
+    if (busy || restoreScroll.current === null) return;
+    const top = restoreScroll.current;
+    const frame = requestAnimationFrame(() => { scrollRef.current?.scrollTo(0, top); restoreScroll.current = null; });
+    return () => cancelAnimationFrame(frame);
+  }, [busy, result, navigation.index]);
 
   const countsKey = JSON.stringify(summary?.counts);
   // A replacement can keep counts unchanged; empty periodic scans need no new search.
@@ -161,9 +167,29 @@ function App() {
     }
     return () => { stopped = true; };
   }, [result, selected?.id]);
-  const resetResults = () => { setResult({ items: [], total: 0 }); setBusy(true); setChecked([]); setLimit(200); scrollRef.current?.scrollTo(0, 0); };
-  const chooseScope = (value: string, tag = '') => { if (value !== scope || tag !== activeTag || modelGroup) resetResults(); setScope(value); setActiveTag(tag); setSelected(null); setModelGroup(null); setResourceRelation(''); setMultiMode(false); };
-  const enterModelGroup = (asset: Asset) => { resetResults(); setModelGroup(asset); setSelected(asset); setResourceRelation(''); };
+  const resetResults = () => { ++requestId.current; setResult({ items: [], total: 0 }); setBusy(true); setChecked([]); scrollRef.current?.scrollTo(0, 0); };
+  const browse = (changes: Partial<BrowseView>, keepScroll = false) => {
+    const next = { ...navigation.view, ...changes };
+    const reload = listLocation(next) !== listLocation(navigation.view);
+    navigation.navigate(changes, scrollRef.current?.scrollTop || 0, keepScroll);
+    restoreScroll.current = null;
+    if (reload) resetResults();
+    setMultiMode(false); setChecked([]); setPreview(false);
+  };
+  const chooseScope = (value: string, tag = '') => browse({ scope: value, activeTag: tag,
+    selected: null, modelGroup: null, resourceRelation: '', limit: 200 });
+  const enterModelGroup = (asset: Asset) => browse({ scope: 'textures', activeTag: '',
+    modelGroup: asset, selected: asset, resourceRelation: '', limit: 200 });
+  const openAsset = (asset: Asset) => browse({ selected: asset }, true);
+  const moveHistory = (delta: number) => {
+    const target = navigation.entries[navigation.index + delta];
+    if (!target) return;
+    navigation.go(delta, scrollRef.current?.scrollTop || 0);
+    restoreScroll.current = target.scrollTop;
+    if (listLocation(target) !== listLocation(navigation.view)) resetResults();
+    setMultiMode(false); setChecked([]); setPreview(false); setCopies(null);
+  };
+  const search = (value: BrowseView['query'], input = '') => browse({ query: value, draft: input, limit: 200 });
   const addFolder = () => run(async () => {
     const paths = await window.prism.chooseFolder();
     for (const path of paths) await api('/folders', 'POST', { path });
@@ -171,7 +197,7 @@ function App() {
   });
   const chooseImage = () => run(async () => {
     const path = await window.prism.chooseImage();
-    if (path) { setQuery({ image_path: path, label: path.split('/').pop() }); setDraft(''); setLimit(200); }
+    if (path) search({ image_path: path, label: path.split('/').pop() });
   });
   const patch = async (asset: Asset, changes: Partial<Asset>) => {
     const value = await api<Asset>(`/assets/${asset.id}`, 'PATCH', changes);
@@ -180,7 +206,7 @@ function App() {
     await loadSummary();
     setRefresh(n => n + 1);
   };
-  const similar = (asset: Asset) => { setQuery({ asset_id: asset.id, label: asset.name }); setDraft(''); setLimit(200); };
+  const similar = (asset: Asset) => search({ asset_id: asset.id, label: asset.name });
   const scan = (f: FolderType) => run(async () => { await api(`/folders/${f.id}/scan`, 'POST', { retry: true }); await loadSummary(); setTasksOpen(true); });
   const retry = (ids?: string[]) => run(async () => {
     setRetryBusy(true);
@@ -214,7 +240,7 @@ function App() {
       await loadSummary(); setRefresh(n => n + 1);
     } finally { setRecoveryBusy(false); }
   });
-  const clearSearch = () => { setQuery({}); setDraft(''); setLimit(200); };
+  const clearSearch = () => search({});
   const selectAsset = (asset: Asset, extend = false) => {
     setSelected(asset);
     if (extend && anchor.current) {
@@ -244,7 +270,7 @@ function App() {
 
   return <div className="app" onDragOver={e => { e.preventDefault(); if (e.dataTransfer.types.includes('Files')) setDragging(true); }}
     onDrop={e => { e.preventDefault(); setDragging(false); const file = e.dataTransfer.files[0]; if (file) {
-      const path = window.prism.filePath(file); if (path) { setQuery({ image_path: path, label: file.name }); setDraft(''); }
+      const path = window.prism.filePath(file); if (path) search({ image_path: path, label: file.name });
     } }}>
     <aside className="sidebar">
       <div className="traffic-space"/>
@@ -285,8 +311,12 @@ function App() {
           {running ? <LoaderCircle size={15} className="spin"/> : <Check size={15}/>}
           {running ? `正在索引 ${running.done}/${running.total || '…'}` : '索引任务'}</button>
       </header>
+      <nav className="navigation-toolbar" aria-label="浏览导航">
+        <button aria-label="返回" title="返回上一浏览位置" disabled={!navigation.canBack} onClick={() => moveHistory(-1)}><ArrowLeft size={16}/><span>返回</span></button>
+        <button aria-label="前进" title="前进到下一浏览位置" disabled={!navigation.canForward} onClick={() => moveHistory(1)}><ArrowRight size={16}/><span>前进</span></button>
+      </nav>
       <div className="search-area">
-        <form className="search-box" onSubmit={e => { e.preventDefault(); if (draft.trim()) { setQuery({ text: draft.trim() }); setLimit(200); } }}>
+        <form className="search-box" onSubmit={e => { e.preventDefault(); if (draft.trim()) search({ text: draft.trim() }, draft.trim()); }}>
           <Search size={21}/><input ref={searchRef} aria-label="语义搜索" value={draft} onChange={e => setDraft(e.target.value)}
             placeholder="用画面描述找素材，例如：冷色调的石制拱门"/>
           {draft && <button type="button" title="清空搜索" onClick={clearSearch}><X size={15}/></button>}
@@ -309,9 +339,9 @@ function App() {
       <div className="result-controls">
         {!groupedResources && <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>}
         {scope === 'textures' && <>
-          {modelGroup && <button className="text-action" onClick={() => { resetResults(); setModelGroup(null); setSelected(null); setResourceRelation(''); setMultiMode(false); }}>返回模型分组</button>}
+          {modelGroup && <button className="text-action" onClick={() => browse({ modelGroup: null, selected: null, resourceRelation: '', limit: 200 })}>返回模型分组</button>}
           {!modelGroup && !searching && <label>展示方式<select aria-label="贴图展示方式" value={flatTextures ? 'flat' : 'groups'}
-            onChange={e => { resetResults(); setFlatTextures(e.target.value === 'flat'); setSelected(null); setMultiMode(false); }}><option value="groups">按模型分组</option><option value="flat">平铺全部贴图</option></select></label>}
+            onChange={e => browse({ flatTextures: e.target.value === 'flat', selected: null, limit: 200 })}><option value="groups">按模型分组</option><option value="flat">平铺全部贴图</option></select></label>}
           {modelGroup && <label>资源类型<select aria-label="资源类型" value={resourceRelation} onChange={e => setResourceRelation(e.target.value)}>
             <option value="">全部贴图</option><option value="bound">材质引用</option><option value="auxiliary">同目录辅助</option></select></label>}
         </>}
@@ -365,9 +395,9 @@ function App() {
                 style={{ transform: `translateY(${row.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))` }}>
                 {result.items.slice(row.index * columns, (row.index + 1) * columns).map(asset => <div role="button" tabIndex={0}
                   aria-label={`${groupedResources ? '模型分组' : '素材'} ${asset.name}`} key={asset.id} className={`asset-card ${selected?.id === asset.id ? 'selected' : ''} ${checked.includes(asset.id) ? 'checked' : ''}`}
-                  onClick={e => { if (groupedResources) enterModelGroup(asset); else if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); } else setSelected(asset); }}
-                  onDoubleClick={() => { if (!multiMode && !groupedResources) { setSelected(asset); setPreview(true); } }}
-                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (groupedResources) enterModelGroup(asset); else if (multiMode) selectAsset(asset, e.shiftKey); else setSelected(asset); } }}>
+                  onClick={e => { if (groupedResources) enterModelGroup(asset); else if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); } else openAsset(asset); }}
+                  onDoubleClick={() => { if (!multiMode && !groupedResources) { openAsset(asset); setPreview(true); } }}
+                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (groupedResources) enterModelGroup(asset); else if (multiMode) selectAsset(asset, e.shiftKey); else openAsset(asset); } }}>
                   <div className="asset-image" style={{ height: cellSize }}>
                     {asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : <ImageIcon size={35}/>}
                     <span className="format-badge">{asset.ext}</span>
@@ -403,14 +433,14 @@ function App() {
             {selected.status === 'error' ? <><RefreshCw size={15}/> 重试索引</> : <><Sparkles size={15}/> 查找相似</>}
           </button><button title={selected.favorite ? '取消收藏' : '收藏素材'} onClick={() => run(() => patch(selected, { favorite: !selected.favorite }))}><Heart size={17} fill={selected.favorite ? 'currentColor' : 'none'}/></button></div>
           {selected.kind === 'model' && <ModelDetails asset={selected} connection={connection}/>}
-          {selected.kind === 'model' && <button className="text-action" onClick={() => { chooseScope('textures'); enterModelGroup(selected); }}>查看此模型的贴图分组</button>}
-          {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属模型</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => setSelected(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
+          {selected.kind === 'model' && <button className="text-action" onClick={() => enterModelGroup(selected)}>查看此模型的贴图分组</button>}
+          {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属模型</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
           <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>
           <div className="detail-section"><h3>文件副本</h3>
             <p className="organization-description">详情中的标签和收藏只修改当前文件。批量整理可处理选中项的全部副本。</p>
             <button className="text-action" onClick={() => run(async () => { const data = await api<{ items: Asset[] }>(`/assets/${selected.id}/copies`); setCopies(data.items); })}>查看全部未排除副本</button>
             {copies && <div className="copy-list">{copies.map(a => <div key={a.id}><p>{a.path}</p><button onClick={() => window.prism.reveal(a.path)}>定位</button>
-              <button onClick={() => run(async () => { setSelected(await api<Asset>(`/assets/${a.id}`)); })}>详情</button></div>)}</div>}
+              <button onClick={() => run(async () => { openAsset(await api<Asset>(`/assets/${a.id}`)); })}>详情</button></div>)}</div>}
           </div>
           <div className="detail-section"><h3>所在集合</h3><div className="collection-chips">{selected.collections?.map(c => <button className="text-action" key={c.id} onClick={() => chooseScope(`collection:${c.id}`)}>{c.name}</button>)}</div>
             <button className="text-action" onClick={() => {
