@@ -25,7 +25,7 @@ export type Collection = { id: string; name: string; count: number };
 export type Job = { id: string; folder_id: string; name: string; status: string; total: number;
   done: number; failed: number; error: string | null; created: number };
 export type Summary = { total: number; favorites: number; counts: Record<string, number>;
-  models: number; components: number; blender_available: boolean;
+  models: number; components: number; independent_images: number; blender_available: boolean;
   recovery?: { action: string; count: number }[];
   folders: Folder[]; tags: { name: string; count: number }[]; model: string;
   model_error: string | null; data_dir: string; jobs: Job[]; collections: Collection[] };

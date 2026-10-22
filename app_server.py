@@ -123,6 +123,7 @@ def remove_collection(cid: str):
 class Filters(BaseModel):
     kind: Literal["", "image", "model", "texture"] = ""
     include_components: bool = False
+    exclude_components: bool = False
     folder_id: str = ""
     collection_id: str = ""
     model_id: str = ""

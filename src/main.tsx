@@ -67,7 +67,7 @@ function App() {
   const groupedResources = scope === 'textures' && !flatTextures && !modelGroup && !searching;
   const folder = summary?.folders.find(f => f.id === scope);
   const collection = summary?.collections.find(c => `collection:${c.id}` === scope);
-  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '模型附属贴图', images: '全部图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || '全部素材'));
+  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '模型附属贴图', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || '全部素材'));
   const checkedAssets = result.items.filter(a => checked.includes(a.id));
   const checkedIds = [...new Set(checkedAssets.flatMap(a => a.member_ids || [a.id]))];
   const columns = Math.max(2, Math.floor((gridWidth - 48) / (cardSize + 14)));
@@ -141,6 +141,7 @@ function App() {
       setBusy(true);
       const params = { ...filters, limit: searching ? topK : limit, top_k: topK,
         kind: scope === 'models' ? 'model' : scope === 'textures' ? 'texture' : scope === 'images' ? 'image' : '',
+        exclude_components: scope === 'images',
         model_id: modelGroup?.id || '', relation: resourceRelation,
         group_duplicates: groupDuplicates, collection_id: collection?.id || '', tag: activeTag, favorite: scope === 'favorites',
         status: ['error', 'missing'].includes(scope) ? scope : '', folder_id: folder?.id || '' };
@@ -222,7 +223,8 @@ function App() {
       const data = await api<{ queued: number; busy: number }>('/assets/retry', 'POST', {
         ids: ids || [], filters: { ...filters, folder_id: folder?.id || '', collection_id: collection?.id || '',
           tag: activeTag, favorite: scope === 'favorites',
-          kind: scope === 'models' ? 'model' : scope === 'textures' ? 'texture' : scope === 'images' ? 'image' : '' },
+          kind: scope === 'models' ? 'model' : scope === 'textures' ? 'texture' : scope === 'images' ? 'image' : '',
+          exclude_components: scope === 'images' },
       });
       notify(data.queued ? `已安排 ${data.queued} 项重试${data.busy ? `；另 ${data.busy} 项所在目录正在索引` : ''}`
         : data.busy ? `${data.busy} 项所在目录正在索引，请完成后重试` : '当前没有可重试的失败项');
@@ -289,7 +291,7 @@ function App() {
         <button title={`${summary.total} 个文件，其中 ${summary.components} 张贴图收纳在模型下`} className={scope === 'all' && !activeTag ? 'active' : ''} onClick={() => chooseScope('all')}><Grid2X2 size={17}/>全部素材<span>{summary.total - summary.components}</span></button>
         <button className={scope === 'models' ? 'active' : ''} onClick={() => chooseScope('models')}><Box size={17}/>3D 模型<span>{summary.models}</span></button>
         <button className={scope === 'textures' ? 'active' : ''} onClick={() => chooseScope('textures')}><ImageIcon size={17}/>模型附属贴图<span>{summary.components}</span></button>
-        <button className={scope === 'images' ? 'active' : ''} onClick={() => chooseScope('images')}><ImageIcon size={17}/>全部图片</button>
+        <button title="独立图片文件数，不包含模型附属贴图" className={scope === 'images' ? 'active' : ''} onClick={() => chooseScope('images')}><ImageIcon size={17}/>独立图片<span>{summary.independent_images}</span></button>
         <button className={scope === 'favorites' ? 'active' : ''} onClick={() => chooseScope('favorites')}><Heart size={17}/>我的收藏<span>{summary.favorites}</span></button>
       </nav>
       <div className="nav-label">关联目录<button title="添加目录" onClick={addFolder}><FolderPlus size={14}/></button></div>
@@ -368,7 +370,8 @@ function App() {
         <span aria-live="polite">{busy ? '更新中…' : groupedResources ? `${result.total} 个模型分组 · ${result.resource_total ?? 0} 张附属贴图（共享贴图可属于多个模型）`
           : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? `${query.text && result.keyword_total !== undefined ? ` · 关键词命中 ${result.keyword_total} 项` : ''} · 返回 ${result.total} 个候选` : ''}`}</span>
       </div>
-      {summary.models > 0 && <div className="component-note">{groupedResources ? '点击模型分组查看材质引用、同目录辅助贴图和模型说明；原文件保持原位。'
+      {summary.models > 0 && <div className="component-note">{scope === 'images' ? '独立图片不展示模型附属贴图。材质与辅助贴图请到左侧“模型附属贴图”或模型详情中查看。'
+        : groupedResources ? '点击模型分组查看材质引用、同目录辅助贴图和模型说明；原文件保持原位。'
         : '模型附属贴图按模型自动分组；收藏、标签与虚拟集合仍可单独整理贴图。'}</div>}
       {scope === 'missing' && <div className="component-note">失联表示旧路径不存在。扫描会按文件内容找回已移动的图片；多个候选且有整理信息时，请在详情选择新位置。</div>}
       {filtersOpen && <div className="filters">

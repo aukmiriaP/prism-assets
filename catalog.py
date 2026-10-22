@@ -679,6 +679,8 @@ class Catalog:
             clauses.append("a.kind='image' AND " + self.owned_sql())
         elif not filters.get("include_components") and not any(filters.get(k) for k in ("favorite", "collection_id", "tag", "status")) and filters.get("kind") != "image":
             clauses.append("NOT " + self.owned_sql())
+        if filters.get("exclude_components"):
+            clauses.append("NOT " + self.owned_sql())
         for key in ("folder_id", "status"):
             if filters.get(key):
                 clauses.append(f"a.{key}=?")
@@ -962,6 +964,8 @@ class Catalog:
         return {"counts": counts, "total": sum(v for k, v in counts.items() if k != "missing"),
                 "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.archived=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
+                "independent_images": self.rows("""SELECT count(*) n FROM assets a WHERE a.kind='image'
+                    AND a.excluded=0 AND a.archived=0 AND a.status!='missing' AND NOT """ + self.owned_sql())[0]["n"],
                 "blender_available": bool(blender_executable()),
                 "favorites": self.rows("SELECT count(*) n FROM assets WHERE favorite=1 AND status!='missing' AND excluded=0 AND archived=0")[0]["n"],
                 "recovery": self.rows("""SELECT action,count(*) count FROM relocation_history GROUP BY action"""),
