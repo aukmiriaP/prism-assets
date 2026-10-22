@@ -10,10 +10,12 @@ import type { Asset, Collection, Connection, Folder as FolderType, Result, Searc
 import { CollectionEditor, ExclusionEditor } from './organization';
 import { ModelDetails, ModelViewer } from './model-viewer';
 import { listLocation, useNavigation, type BrowseView } from './navigation';
+import { ViewResults } from './view-results';
 import './style.css';
 import './organization.css';
 import './navigation.css';
 import './search.css';
+import './listing.css';
 
 const api = <T,>(route: string, method?: string, body?: unknown) => window.prism.api<T>(route, method, body);
 const bytes = (n: number) => n > 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
@@ -34,7 +36,10 @@ function App() {
   const setFiltersOpen = field('filtersOpen'), setFilters = field('filters'), setLimit = field('limit');
   const setResourceRelation = field('resourceRelation');
   const [result, setResult] = useState<Result>({ items: [], total: 0 });
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(true);
+  const [loadingVisible, setLoadingVisible] = useState(false);
+  const resultCache = useRef(new ViewResults());
+  const lastFilename = useRef(filters.name);
   const [notice, setNotice] = useState('');
   const [tasksOpen, setTasksOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -63,6 +68,8 @@ function App() {
   const requestId = useRef(0);
   const restoreScroll = useRef<number | null>(null);
   const searching = Boolean(query.text || query.image_path || query.asset_id);
+  const viewLocation = listLocation(navigation.view);
+  const loading = busy && loadingVisible;
   const strategy = query.strategy || 'hybrid';
   const inModels = scope === 'models' || scope === 'textures';
   const groupedResources = inModels && !modelGroup;
@@ -135,31 +142,58 @@ function App() {
   // A replacement can keep counts unchanged; empty periodic scans need no new search.
   const meaningfulScan = summary?.jobs.find(j => j.done > 0);
   const scanKey = meaningfulScan?.id + ':' + meaningfulScan?.done + ':' + meaningfulScan?.status;
+  const cacheEpoch = JSON.stringify([connection?.base, refresh, summary?.counts, summary?.favorites,
+    summary?.tags, summary?.collections,
+    summary?.folders.map(f => [f.id, f.name, f.path, f.count, f.status, f.exclusions, f.excluded_count]), scanKey]);
+  const requestFor = (view: BrowseView) => {
+    const hasSearch = Boolean(view.query.text || view.query.image_path || view.query.asset_id);
+    const models = view.scope === 'models' || view.scope === 'textures';
+    const params = { ...view.filters, limit: hasSearch ? topK : view.limit, top_k: topK,
+      kind: models ? !view.modelGroup || view.resourceRelation === 'model' ? 'model' : '' : view.scope === 'images' ? 'image' : '',
+      exclude_components: view.scope === 'images', include_components: Boolean(view.modelGroup),
+      model_id: view.modelGroup?.id || '', relation: view.resourceRelation === 'model' ? '' : view.resourceRelation,
+      include_model: Boolean(view.modelGroup) && (!view.resourceRelation || view.resourceRelation === 'model'),
+      group_duplicates: groupDuplicates,
+      collection_id: summary?.collections.find(c => `collection:${c.id}` === view.scope)?.id || '',
+      tag: view.activeTag, favorite: view.scope === 'favorites',
+      status: ['error', 'missing'].includes(view.scope) ? view.scope : '',
+      folder_id: summary?.folders.find(f => f.id === view.scope)?.id || '' };
+    return { route: hasSearch ? '/search' : '/assets/list',
+      body: hasSearch ? { ...view.query, filters: params } : params,
+      key: hasSearch ? null : JSON.stringify(params) };
+  };
   useEffect(() => {
-    if (!connection) return;
+    setLoadingVisible(false);
+    if (!busy || !connection || !summary) return;
+    const timer = setTimeout(() => setLoadingVisible(true), 200);
+    return () => clearTimeout(timer);
+  }, [busy, viewLocation, connection, Boolean(summary)]);
+  useEffect(() => {
+    if (!connection || !summary) return;
     const current = ++requestId.current;
+    const request = requestFor(navigation.view);
+    const cached = request.key ? resultCache.current.peek(cacheEpoch, request.key) : undefined;
+    const delay = filters.name !== lastFilename.current ? 180 : 0;
+    lastFilename.current = filters.name;
+    if (cached) {
+      setResult(cached); setBusy(false);
+      setChecked(old => old.filter(id => cached.items.some(a => a.id === id)));
+      return;
+    }
+    setBusy(true);
     const timer = setTimeout(async () => {
-      setBusy(true);
-      const params = { ...filters, limit: searching ? topK : limit, top_k: topK,
-        kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : '',
-        exclude_components: scope === 'images',
-        include_components: Boolean(modelGroup),
-        model_id: modelGroup?.id || '', relation: resourceRelation === 'model' ? '' : resourceRelation,
-        include_model: Boolean(modelGroup) && (!resourceRelation || resourceRelation === 'model'),
-        group_duplicates: groupDuplicates, collection_id: collection?.id || '', tag: activeTag, favorite: scope === 'favorites',
-        status: ['error', 'missing'].includes(scope) ? scope : '', folder_id: folder?.id || '' };
       try {
-        const data = await api<Result>(searching ? '/search' : '/assets/list', 'POST',
-          searching ? { ...query, filters: params } : params);
+        const fetch = () => api<Result>(request.route, 'POST', request.body);
+        const data = await (request.key ? resultCache.current.load(cacheEpoch, request.key, fetch) : fetch());
         if (current === requestId.current) {
           setResult(data);
           setChecked(old => old.filter(id => data.items.some(a => a.id === id)));
         }
       } catch (e) { if (current === requestId.current) notify(cleanError(e)); }
       finally { if (current === requestId.current) setBusy(false); }
-    }, 180);
+    }, delay);
     return () => clearTimeout(timer);
-  }, [connection, scope, folder?.id, collection?.id, activeTag, filters, query, limit, topK, groupDuplicates, refresh, countsKey, scanKey, modelGroup?.id, resourceRelation, groupedResources]);
+  }, [connection, scope, folder?.id, collection?.id, activeTag, filters, query, limit, topK, groupDuplicates, refresh, countsKey, scanKey, modelGroup?.id, resourceRelation, groupedResources, cacheEpoch, Boolean(summary)]);
   useEffect(() => {
     let stopped = false;
     if (selected) {
@@ -173,13 +207,19 @@ function App() {
     }
     return () => { stopped = true; };
   }, [result, selected?.id]);
-  const resetResults = () => { ++requestId.current; setResult({ items: [], total: 0 }); setBusy(true); setChecked([]); scrollRef.current?.scrollTo(0, 0); };
+  const resetResults = (view: BrowseView) => {
+    ++requestId.current;
+    const request = requestFor(view);
+    const cached = request.key ? resultCache.current.peek(cacheEpoch, request.key) : undefined;
+    setResult(cached || { items: [], total: 0 }); setBusy(!cached); setLoadingVisible(false);
+    setChecked([]); scrollRef.current?.scrollTo(0, 0);
+  };
   const browse = (changes: Partial<BrowseView>, keepScroll = false) => {
     const next = { ...navigation.view, ...changes };
     const reload = listLocation(next) !== listLocation(navigation.view);
     navigation.navigate(changes, scrollRef.current?.scrollTop || 0, keepScroll);
     restoreScroll.current = null;
-    if (reload) resetResults();
+    if (reload) resetResults(next);
     setMultiMode(false); setChecked([]); setPreview(false);
   };
   const chooseScope = (value: string, tag = '') => browse({ scope: value, activeTag: tag,
@@ -196,7 +236,7 @@ function App() {
     if (!target) return;
     navigation.go(delta, scrollRef.current?.scrollTop || 0);
     restoreScroll.current = target.scrollTop;
-    if (listLocation(target) !== listLocation(navigation.view)) resetResults();
+    if (listLocation(target) !== listLocation(navigation.view)) resetResults(target);
     setMultiMode(false); setChecked([]); setPreview(false); setCopies(null);
   };
   const search = (value: BrowseView['query'], input = '') => browse({
@@ -217,6 +257,7 @@ function App() {
   });
   const patch = async (asset: Asset, changes: Partial<Asset>) => {
     const value = await api<Asset>(`/assets/${asset.id}`, 'PATCH', changes);
+    resultCache.current.clear();
     setResult(old => ({ ...old, items: old.items.map(a => a.id === value.id ? { ...a, ...value } : a) }));
     if (selected?.id === value.id) setSelected(value);
     await loadSummary();
@@ -279,6 +320,7 @@ function App() {
     setBulkBusy(true);
     try {
       const value = await api<{ updated: number }>('/assets/bulk', 'POST', { ids: checkedIds, ...changes });
+      resultCache.current.clear();
       notify(`已更新 ${value.updated} 个文件`); setChecked([]); setBulkTag('');
       await loadSummary(); setRefresh(n => n + 1);
     } catch (e) { notify(cleanError(e)); }
@@ -352,7 +394,7 @@ function App() {
           : '名称命中优先 · 语义候选补充 · 拖入图片寻找相似素材'} <span>完全在本机处理</span></div>
         {searching && result.warning && <p className="search-warning">{result.warning}</p>}
       </div>
-      <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}<span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span></h1></div>
+      <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span>}</h1></div>
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
           <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
           {collection && <button onClick={() => setCollectionEditor(collection)}>管理集合</button>}
@@ -375,7 +417,7 @@ function App() {
         </>}
         {searching && <label>候选上限<select aria-label="候选上限" value={topK} onChange={e => setTopK(+e.target.value)}>
           {[20, 50, 100, 200].map(k => <option key={k} value={k}>前 {k} 项</option>)}</select></label>}
-        <span aria-live="polite">{busy ? '更新中…' : groupedResources && !searching ? `${result.total} 个模型分组 · 主文件、材质与附属资源`
+        <span aria-live="polite">{loading ? '更新中…' : busy && result.items.length === 0 ? '' : groupedResources && !searching ? `${result.total} 个模型分组 · 主文件、材质与附属资源`
           : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? `${query.text && result.keyword_total !== undefined ? ` · 关键词命中 ${result.keyword_total} 项` : ''} · 返回 ${result.total} 个候选` : ''}`}</span>
       </div>
       {summary.models > 0 && <div className="component-note">{scope === 'images' ? '独立图片不展示模型附属贴图。模型文件、材质与贴图请到左侧“3D 模型”中查看。'
@@ -412,11 +454,13 @@ function App() {
       </div>}
       <div className="content-row">
         <main className="gallery" ref={scrollRef} aria-label="素材网格">
-          {busy && <div className="loading-line"/>}
-          {result.items.length === 0 ? <div className="empty">
+          {loading && <div className="loading-line"/>}
+          {result.items.length === 0 ? busy ? loading ? <div className="gallery-read-state" role="status">
+            <LoaderCircle className="spin" size={17}/>{searching ? summary.model === 'loading' ? '正在准备本地模型…' : '正在搜索…' : '正在读取素材列表…'}
+          </div> : null : <div className="empty">
             <div className="empty-art"><div/><div/><div><Aperture size={42}/></div></div>
             <div className="eyebrow">{summary.folders.length ? 'ROOM FOR DISCOVERY' : 'A HOME FOR YOUR IDEAS'}</div>
-            <h2>{busy ? (summary.model === 'loading' ? '正在准备本地模型' : '正在寻找素材') : !summary.folders.length ? '让灵感，有迹可循。' : running ? '你的素材正在入库' : '这里还没有匹配的素材'}</h2>
+            <h2>{!summary.folders.length ? '让灵感，有迹可循。' : running ? '你的素材正在入库' : '这里还没有匹配的素材'}</h2>
             <p>{!summary.folders.length ? '关联本地素材文件夹，用一句描述或一张图片，\n找回你需要的那份灵感。' : running ? '缩略图与语义索引会陆续出现。你可以继续浏览。' : '试试调整筛选条件、切换目录，或关联更多图片。'}</p>
             {!summary.folders.length && <><button className="primary" onClick={addFolder}><FolderPlus size={17}/> 关联素材文件夹</button><div className="empty-foot">图片 · PMX · FBX · GLB · glTF<span>仅建立索引，保留原始目录</span></div></>}
           </div> : <>
@@ -490,7 +534,7 @@ function App() {
             <p className="file-path" key={i}>{entry.old_path}</p>)}<p className="organization-description">旧路径记录已保留，当前使用上方的现存文件。</p></div>}
         </aside>}
       </div>
-      <footer className="footer"><span><HardDrive size={12}/> {summary.total} 个文件 · {summary.counts.ready || 0} 个已索引</span><span>{busy ? '正在搜索…' : searching ? query.text && strategy !== 'semantic' ? strategy === 'keyword' ? '关键词匹配' : '关键词优先 · 语义补充' : '按视觉相关度排序' : '目录变动自动同步'} <i/> 空格预览</span></footer>
+      <footer className="footer"><span><HardDrive size={12}/> {summary.total} 个文件 · {summary.counts.ready || 0} 个已索引</span><span>{loading ? searching ? '正在搜索…' : '正在读取列表…' : searching ? query.text && strategy !== 'semantic' ? strategy === 'keyword' ? '关键词匹配' : '关键词优先 · 语义补充' : '按视觉相关度排序' : '目录变动自动同步'} <i/> 空格预览</span></footer>
     </section>
     {tasksOpen && <div className="task-panel"><div className="panel-heading"><div><span className="eyebrow">BACKGROUND ACTIVITY</span><h2>索引任务</h2></div><button title="关闭任务" onClick={() => setTasksOpen(false)}><X size={18}/></button></div>
       {summary.model_error && <p className="asset-error">{summary.model_error}</p>}
