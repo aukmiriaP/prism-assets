@@ -17,6 +17,7 @@
     "test:models": ".venv/bin/python tests/models.py",
     "test:retry": ".venv/bin/python tests/retry.py",
     "test:retry-ui": "node tests/retry-ui.cjs",
+    "test:appearance-ui": "node tests/appearance-ui.cjs",
     "test:ui": "node tests/ui.cjs"
   },
   "dependencies": {

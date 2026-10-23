@@ -11,6 +11,7 @@ import { CollectionEditor, CollectionTree, ExclusionEditor, orderedCollections }
 import { ModelDetails, ModelViewer } from './model-viewer';
 import { listLocation, useNavigation, type BrowseView } from './navigation';
 import { ViewResults } from './view-results';
+import { AppearanceSettings, useAppearance } from './appearance';
 import './style.css';
 import './organization.css';
 import './navigation.css';
@@ -24,6 +25,7 @@ const labels: Record<string, string> = { ready: '已索引', pending: '等待索
 const cleanError = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': Error: /, '');
 
 function App() {
+  const appearance = useAppearance();
   const [connection, setConnection] = useState<Connection | null>(null);
   const [fatal, setFatal] = useState('');
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -411,11 +413,11 @@ function App() {
           {running ? <LoaderCircle size={15} className="spin"/> : <Check size={15}/>}
           {running ? `正在索引 ${running.done}/${running.total || '…'}` : '索引任务'}</button>
       </header>
-      <nav className="navigation-toolbar" aria-label="浏览导航">
-        <button aria-label="返回" title="返回上一浏览位置" disabled={!navigation.canBack} onClick={() => moveHistory(-1)}><ArrowLeft size={16}/><span>返回</span></button>
-        <button aria-label="前进" title="前进到下一浏览位置" disabled={!navigation.canForward} onClick={() => moveHistory(1)}><ArrowRight size={16}/><span>前进</span></button>
-      </nav>
       <div className="search-area">
+        <nav className="navigation-toolbar" aria-label="浏览导航">
+          <button aria-label="返回" title="返回上一浏览位置" disabled={!navigation.canBack} onClick={() => moveHistory(-1)}><ArrowLeft size={16}/></button>
+          <button aria-label="前进" title="前进到下一浏览位置" disabled={!navigation.canForward} onClick={() => moveHistory(1)}><ArrowRight size={16}/></button>
+        </nav>
         <form className="search-box" onSubmit={e => { e.preventDefault(); if (draft.trim()) search({ text: draft.trim() }, draft.trim()); }}>
           <Search size={21}/><input ref={searchRef} aria-label="语义搜索" value={draft} onChange={e => setDraft(e.target.value)}
             placeholder="搜索名称、标签或画面描述，例如：赛琳娜 / 冷色石制拱门"/>
@@ -427,13 +429,13 @@ function App() {
           <button type="button" title="以图搜图" className="image-search" onClick={chooseImage}><ImagePlus size={19}/><span>以图搜图</span></button>
           <button type="submit" className="search-submit" disabled={!draft.trim()} title="搜索"><ArrowRight size={18}/></button>
         </form>
-        <div className="search-hint"><Sparkles size={12}/> {query.image_path || query.asset_id ? '按画面相似度寻找素材'
+        {searching && <div className="search-hint"><Sparkles size={12}/> {query.image_path || query.asset_id ? '按画面相似度寻找素材'
           : strategy === 'keyword' ? '匹配文件名、标签、所属模型与目录，无需加载模型'
           : strategy === 'semantic' ? '按中英文画面描述寻找相似素材'
-          : '名称命中优先 · 语义候选补充 · 拖入图片寻找相似素材'} <span>完全在本机处理</span></div>
+          : '名称命中优先 · 语义候选补充 · 拖入图片寻找相似素材'} <span>完全在本机处理</span></div>}
         {searching && result.warning && <p className="search-warning">{result.warning}</p>}
       </div>
-      <div className="library-heading"><div><div className="eyebrow">{searching ? 'VISUAL SEARCH' : 'YOUR COLLECTION'}</div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span>}</h1></div>
+      <div className="library-heading"><div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span>}</h1></div>
         <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
           <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
           {collection && <><button onClick={() => newCollection('navigation', collection.id)}><FolderPlus size={14}/>新建子集合</button>
@@ -613,7 +615,8 @@ function App() {
         <progress max={j.total || 1} value={j.done}/><div className="job-meta"><span>{j.done} / {j.total} 项 {j.failed > 0 && `· ${j.failed} 项失败`}</span>{['partial', 'failed', 'interrupted'].includes(j.status) && <button onClick={() => { const f = summary.folders.find(f => f.id === j.folder_id); if (f) scan(f); }}><RefreshCw size={12}/> 重试</button>}</div>{j.error && <p className="asset-error">{j.error}</p>}</div>)
         : <div className="task-empty"><Check size={25}/><p>暂无索引任务</p></div>}</div>}
     {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><section className="settings-modal" role="dialog" aria-label="设置与帮助" onClick={e => e.stopPropagation()}>
-      <div className="panel-heading"><div><span className="eyebrow">LOCAL, BY DESIGN</span><h2>你的素材，留在你的电脑。</h2></div><button title="关闭设置" onClick={() => setSettingsOpen(false)}><X size={20}/></button></div>
+      <div className="panel-heading"><div><h2>设置与帮助</h2></div><button title="关闭设置" onClick={() => setSettingsOpen(false)}><X size={20}/></button></div>
+      <AppearanceSettings {...appearance}/>
       <div className="settings-info"><HardDrive size={22}/><div><strong>Prism Assets 0.3.1 · Apple Silicon</strong><p>图文检索与索引完全本地运行。支持静态图片与 TGA，以及 PMX、FBX、GLB、glTF 模型。模型预览需安装 Blender：{summary.blender_available ? '已检测到' : '未检测到，请安装到“应用程序”后重试索引'}。</p></div></div>
       <h3>关联目录</h3>{summary.folders.map(f => <div className="folder-setting" key={f.id}><Folder size={18}/><div><strong>{f.name}</strong><p>{f.path}</p><small>{f.status === 'online' ? '在线' : '目录不可访问'} · {f.count} 个文件 · 已排除 {f.excluded_count} 个</small></div>
         <button aria-label={`排除子目录 ${f.name}`} title={`排除子目录 ${f.name}`} onClick={() => setExclusionEditor(f)}>排除</button><button title={`重新扫描 ${f.name}`} onClick={() => scan(f)}><RefreshCw size={16}/></button><button title={`解除关联 ${f.name}`} onClick={() => run(async () => {

@@ -31,7 +31,6 @@ export function ModelViewer({ asset, connection, close }: { asset: Asset; connec
     renderer.toneMappingExposure = 1.35;
     holder.appendChild(renderer.domElement);
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color('#22262e');
     scene.add(new THREE.HemisphereLight(0xffffff, 0x7d8592, 3));
     const key = new THREE.DirectionalLight(0xffffff, 3);
     key.position.set(3, 5, 4); scene.add(key);
@@ -44,6 +43,18 @@ export function ModelViewer({ asset, connection, close }: { asset: Asset; connec
     reset.current();
     const grid = new THREE.GridHelper(6, 24, 0x626875, 0x373d48);
     grid.position.y = -1.04; scene.add(grid);
+    const updateAppearance = () => {
+      const style = getComputedStyle(document.documentElement);
+      scene.background = new THREE.Color(style.getPropertyValue('--stage').trim());
+      const themedGrid = new THREE.GridHelper(6, 24,
+        style.getPropertyValue('--stage-axis').trim(), style.getPropertyValue('--stage-grid').trim());
+      const colors = grid.geometry.getAttribute('color') as THREE.BufferAttribute;
+      colors.copy(themedGrid.geometry.getAttribute('color') as THREE.BufferAttribute);
+      colors.needsUpdate = true;
+      themedGrid.geometry.dispose(); (themedGrid.material as THREE.Material).dispose();
+    };
+    updateAppearance();
+    window.addEventListener('prism-appearance-change', updateAppearance);
     let stopped = false;
     const disposeMesh = (mesh: THREE.Mesh) => {
       mesh.geometry.dispose();
@@ -71,6 +82,7 @@ export function ModelViewer({ asset, connection, close }: { asset: Asset; connec
     observer.observe(holder);
     renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
     return () => {
+      window.removeEventListener('prism-appearance-change', updateAppearance);
       stopped = true; observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose();
       objects.current.forEach(disposeMesh); objects.current = [];
       grid.geometry.dispose(); (grid.material as THREE.Material).dispose();
