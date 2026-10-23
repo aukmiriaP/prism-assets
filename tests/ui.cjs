@@ -143,7 +143,7 @@ async function launch() {
     await page.getByRole('button', { name: /设置与帮助/ }).click();
     await page.getByRole('tab', { name: '关联目录', exact: true }).click();
     await page.getByRole('button', { name: '排除子目录 素材测试' }).click();
-    await page.getByLabel('排除规则').fill('copies');
+    await page.getByRole('checkbox', { name: '排除文件夹 copies', exact: true }).check();
     await page.getByRole('button', { name: '预览影响' }).click();
     await expect(page.locator('.impact')).toContainText('新增 1 个');
     await page.getByRole('button', { name: '保存排除规则' }).click();
@@ -164,7 +164,7 @@ async function launch() {
     await page.getByRole('button', { name: /设置与帮助/ }).click();
     await page.getByRole('tab', { name: '关联目录', exact: true }).click();
     await page.getByRole('button', { name: '排除子目录 素材测试' }).click();
-    await page.getByLabel('排除规则').fill('');
+    await page.getByRole('checkbox', { name: '排除文件夹 copies', exact: true }).uncheck();
     await page.getByRole('button', { name: '预览影响' }).click();
     await expect(page.locator('.impact')).toContainText('恢复 1 个');
     await page.getByRole('button', { name: '保存排除规则' }).click();

@@ -229,9 +229,9 @@ class Catalog:
         directories = Path(path).relative_to(base).parts[:-1]
         for rule in rules:
             parts = Path(rule).parts
-            if len(parts) == 1 and parts[0] in directories:
+            if not rule.startswith("./") and len(parts) == 1 and parts[0] in directories:
                 return True
-            if len(parts) > 1 and directories[:len(parts)] == parts:
+            if (rule.startswith("./") or len(parts) > 1) and directories[:len(parts)] == parts:
                 return True
         return False
 
@@ -241,15 +241,51 @@ class Catalog:
             raise ValueError("最多设置 100 条目录排除规则")
         result = []
         for rule in rules:
-            value = rule.strip().rstrip("/")
+            anchored = rule.startswith("./")
+            value = (rule if anchored else rule.strip()).rstrip("/")
             path = Path(value)
-            if (not value or value == "." or path.is_absolute() or ".." in path.parts
-                    or any(c in value for c in "*?[]\\\0") or len(value) > 1000):
+            if (not value or path == Path(".") or path.is_absolute() or ".." in path.parts
+                    or "\0" in value or (not anchored and any(c in value for c in "*?[]\\"))
+                    or len(value) > 1000):
                 raise ValueError("请输入相对目录路径，不支持 ..、通配符或绝对路径")
-            normalized = str(path)
+            # Checkbox selections are literal root-relative paths. Keep the marker
+            # so a root-level selection cannot exclude same-named nested folders.
+            normalized = ("./" if anchored else "") + str(path)
             if normalized not in result:
                 result.append(normalized)
         return result
+
+    def folder_directories(self, fid, parent=""):
+        folders = self.rows("SELECT path FROM folders WHERE id=?", (fid,))
+        if not folders:
+            raise ValueError("目录不存在")
+        path = Path(parent)
+        if (path.is_absolute() or "\0" in parent or ".." in path.parts
+                or any(part.startswith(".") for part in path.parts)):
+            raise ValueError("请选择关联目录内的非隐藏文件夹")
+        base = Path(folders[0]["path"])
+        target = base
+        try:
+            # Check every component: an intermediate symlink must not escape
+            # the associated root, even if the final entry is a real directory.
+            if base.is_symlink():
+                raise ValueError("关联目录已变为符号链接，请重新关联实际目录")
+            for part in path.parts:
+                target = target / part
+                if target.is_symlink():
+                    raise ValueError("不支持浏览符号链接目录")
+            if not target.is_dir():
+                raise FileNotFoundError(str(target))
+            items = []
+            with os.scandir(target) as entries:
+                for entry in entries:
+                    if not entry.name.startswith(".") and entry.is_dir(follow_symlinks=False):
+                        items.append({"name": entry.name, "path": (path / entry.name).as_posix()})
+            return {"items": sorted(items, key=lambda item: (item["name"].casefold(), item["name"]))}
+        except FileNotFoundError:
+            raise
+        except OSError as exc:
+            raise ValueError("无法读取文件夹，请检查访问权限或磁盘连接") from exc
 
     def reconcile_exclusions(self, fid, rules, base):
         changes = [(int(self.excluded_path(a["path"], base, rules)), a["id"])

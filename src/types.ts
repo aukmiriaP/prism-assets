@@ -21,6 +21,7 @@ export type ModelInfo = { name: string; cache: string; vertices: number; triangl
   resources: ModelResource[] };
 export type Folder = { id: string; name: string; path: string; count: number; status: string;
   exclusions: string[]; excluded_count: number };
+export type Directory = { name: string; path: string };
 export type Collection = { id: string; name: string; count: number; parent_id: string | null;
   path: string; ancestor_ids: string[]; child_count: number };
 export type Job = { id: string; folder_id: string; name: string; status: string; total: number;

@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from PIL import Image
@@ -37,7 +38,7 @@ class Inference:
 class Governance(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="prism-governance-")
-        self.base = Path(self.temp.name)
+        self.base = Path(self.temp.name).resolve()
         self.files = self.base / "originals"
         self.files.mkdir()
         for name, color in [("red.png", "red"), ("blue.png", "blue"), ("green.png", "green")]:
@@ -163,6 +164,84 @@ class Governance(unittest.TestCase):
         self.settle()
         self.assertEqual(self.catalog.list_assets({})["scope_total"], 4)
         self.assertEqual(self.catalog.get_asset(self.catalog.rows("SELECT id FROM assets WHERE name='red-copy.png'")[0]["id"])["excluded"], 1)
+
+    def test_selected_directory_is_literal_and_root_relative(self):
+        for relative in ["a/copies", "copies/nested", "带 空格/[草稿]?"]:
+            directory = self.files / relative
+            directory.mkdir(parents=True)
+            shutil.copyfile(self.files / "blue.png", directory / "fixture.png")
+        self.catalog.rescan(self.folder["id"])
+        self.settle()
+        fid = self.folder["id"]
+        self.assertEqual(self.catalog.folder_exclusions(fid, ["./copies"], preview=True)["excluded_files"], 2)
+        self.assertEqual(self.catalog.folder_exclusions(fid, ["copies"], preview=True)["excluded_files"], 3)
+        self.catalog.folder_exclusions(fid, ["./copies"])
+        self.settle()
+        visible = {a["path"] for a in self.catalog.list_assets({"group_duplicates": False})["items"]}
+        self.assertIn(str(self.files / "a/copies/fixture.png"), visible)
+        self.assertNotIn(str(self.files / "copies/nested/fixture.png"), visible)
+        # A new file is skipped under the exact selected path, but the
+        # same-named directory in another branch is still scanned.
+        for relative in ["copies", "a/copies"]:
+            Image.new("RGB", (32, 32), "yellow").save(self.files / relative / "new.png")
+        self.catalog.rescan(fid)
+        self.settle()
+        self.assertFalse(self.catalog.rows("SELECT id FROM assets WHERE path=?", (str(self.files / "copies/new.png"),)))
+        self.assertTrue(self.catalog.rows("SELECT id FROM assets WHERE path=?", (str(self.files / "a/copies/new.png"),)))
+        rules = ["./带 空格/[草稿]?"]
+        self.assertEqual(self.catalog.folder_exclusions(fid, rules, preview=True)["excluded_files"], 1)
+        self.catalog.folder_exclusions(fid, rules)
+        self.settle()
+        self.assertEqual(json.loads(self.catalog.rows("SELECT exclusions FROM folders WHERE id=?", (fid,))[0]["exclusions"]), rules)
+        self.assertNotIn(str(self.files / "带 空格/[草稿]?/fixture.png"),
+                         {a["path"] for a in self.catalog.list_assets({"group_duplicates": False})["items"]})
+        for invalid in ["./", "./.", "././", "./../copies", "./a/../../copies", "./a\0b"]:
+            with self.assertRaises(ValueError, msg=invalid):
+                self.catalog.folder_exclusions(fid, [invalid])
+
+    def test_directory_listing_is_lazy_scoped_and_does_not_index(self):
+        (self.files / "Assets/嵌套").mkdir(parents=True)
+        (self.files / "empty").mkdir()
+        (self.files / ".hidden/child").mkdir(parents=True)
+        (self.files / "Assets/.private").mkdir()
+        external = self.base / "external"
+        external.mkdir()
+        (external / "secret").mkdir()
+        (self.files / "external-link").symlink_to(external, target_is_directory=True)
+        (self.files / "Assets/link").symlink_to(external, target_is_directory=True)
+        (self.files / "dangling").symlink_to(self.base / "absent", target_is_directory=True)
+        before = self.inference.calls
+        jobs = self.catalog.rows("SELECT id FROM jobs")
+        scan = __import__("os").scandir
+        with patch("catalog.os.scandir", wraps=scan) as scandir:
+            result = self.catalog.folder_directories(self.folder["id"])
+            self.assertEqual(result["items"], [{"name": "Assets", "path": "Assets"},
+                                              {"name": "copies", "path": "copies"},
+                                              {"name": "empty", "path": "empty"}])
+            scandir.assert_called_once_with(self.files)
+        self.assertEqual(self.catalog.folder_directories(self.folder["id"], "Assets")["items"],
+                         [{"name": "嵌套", "path": "Assets/嵌套"}])
+        self.assertEqual(self.catalog.folder_directories(self.folder["id"], "empty")["items"], [])
+        for invalid in ["..", "../external", str(external), ".hidden", "Assets/.private",
+                        "external-link", "external-link/secret", "Assets/link/secret", "x\0y"]:
+            with self.assertRaises(ValueError, msg=invalid):
+                self.catalog.folder_directories(self.folder["id"], invalid)
+        with self.assertRaises(FileNotFoundError):
+            self.catalog.folder_directories(self.folder["id"], "missing")
+        with self.assertRaises(ValueError):
+            self.catalog.folder_directories("unknown")
+        with patch("catalog.os.scandir", side_effect=PermissionError("denied")):
+            with self.assertRaisesRegex(ValueError, "访问权限"):
+                self.catalog.folder_directories(self.folder["id"])
+        self.assertEqual(self.inference.calls, before)
+        self.assertEqual(self.catalog.rows("SELECT id FROM jobs"), jobs)
+        # Excluded children remain visible so the user can uncheck them.
+        self.catalog.folder_exclusions(self.folder["id"], ["./copies"])
+        self.settle()
+        self.assertIn({"name": "copies", "path": "copies"}, self.catalog.folder_directories(self.folder["id"])["items"])
+        self.files.rename(self.base / "offline")
+        with self.assertRaises(FileNotFoundError):
+            self.catalog.folder_directories(self.folder["id"])
 
 
 class Migration(unittest.TestCase):

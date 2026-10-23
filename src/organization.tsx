@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from 'react';
-import { X, Folder, Trash2, ChevronRight, ChevronDown, Plus, Pencil } from 'lucide-react';
-import type { Collection, Folder as FolderType } from './types';
+import React, { useEffect, useRef, useState } from 'react';
+import { X, Folder, Trash2, ChevronRight, ChevronDown, Plus, Pencil, RefreshCw } from 'lucide-react';
+import type { Collection, Directory, Folder as FolderType } from './types';
 
 const api = <T,>(route: string, method?: string, body?: unknown) => window.prism.api<T>(route, method, body);
 const message = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': Error: /, '');
@@ -42,31 +42,116 @@ export function CollectionTree({ collections, activeId, open, create, edit }: {
 export function ExclusionEditor({ folder, close, saved }: {
   folder: FolderType; close: () => void; saved: () => Promise<void>;
 }) {
-  const [draft, setDraft] = useState(folder.exclusions.join('\n'));
+  const [draft, setDraft] = useState(folder.exclusions);
+  const [tree, setTree] = useState<Record<string, { items?: Directory[]; loading?: boolean; error?: string }>>({});
+  const [expanded, setExpanded] = useState<string[]>([]);
+  const generation = useRef(0);
   const [impact, setImpact] = useState<{ excluded_files: number; newly_excluded: number; restored_files: number } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const change = (value: string) => { setDraft(value); setImpact(null); setError(''); };
+  const load = async (parent: string, current = generation.current) => {
+    setTree(old => ({ ...old, [parent]: { loading: true } }));
+    try {
+      const result = await api<{ items: Directory[] }>(`/folders/${folder.id}/directories?parent=${encodeURIComponent(parent)}`);
+      if (generation.current === current) setTree(old => ({ ...old, [parent]: { items: result.items } }));
+    } catch (e) {
+      if (generation.current === current) setTree(old => ({ ...old, [parent]: { error: message(e) } }));
+    }
+  };
+  const refresh = () => {
+    generation.current += 1;
+    setTree({}); setExpanded([]);
+    load('');
+  };
+  useEffect(() => {
+    refresh();
+    return () => { generation.current += 1; };
+  }, [folder.id]);
+  const change = (value: string[]) => {
+    if (value.length > 100) { setError('最多选择 100 个排除范围'); return; }
+    setDraft(value); setImpact(null); setError('');
+  };
+  const toggle = (path: string, checked: boolean) => {
+    const rule = `./${path}`;
+    change(checked ? [...draft.filter(r => r !== rule && !r.startsWith(`${rule}/`)), rule]
+      : draft.filter(r => r !== rule));
+  };
+  const covers = (rule: string, path: string) => {
+    const relative = rule.startsWith('./') ? rule.slice(2) : rule;
+    if (rule.startsWith('./') || relative.includes('/')) return path === relative || path.startsWith(`${relative}/`);
+    return path.split('/').includes(relative);
+  };
+  const expand = (path: string) => {
+    const open = expanded.includes(path);
+    setExpanded(old => open ? old.filter(p => p !== path) : [...old, path]);
+    if (!open && !tree[path]?.items && !tree[path]?.loading) load(path);
+  };
+  const render = (parent = '', depth = 0): React.ReactNode => {
+    const branch = tree[parent];
+    if (!branch || branch.loading) return <p className="directory-state" role="status">正在读取文件夹…</p>;
+    if (branch.error) return <div className="directory-state directory-error" role="alert"><span>{branch.error}</span>
+      <button disabled={busy} onClick={() => load(parent)}>重试读取</button></div>;
+    if (!branch.items?.length) return <p className="directory-state">{parent ? '没有子文件夹' : '当前目录没有可选的子文件夹'}</p>;
+    return branch.items.map(item => {
+      const exact = draft.includes(`./${item.path}`);
+      const inherited = draft.some(rule => rule !== `./${item.path}` && covers(rule, item.path));
+      const partial = !exact && !inherited && draft.some(rule => rule.startsWith(`./${item.path}/`));
+      const open = expanded.includes(item.path);
+      const leaf = tree[item.path]?.items?.length === 0;
+      return <div className="directory-branch" key={item.path}>
+        <div className={`directory-row ${inherited ? 'inherited' : ''}`} style={{ paddingLeft: 8 + depth * 18 }}>
+          {leaf ? <span className="directory-expander-spacer"/> : <button className="directory-expander"
+            aria-label={`${open ? '折叠' : '展开'}文件夹 ${item.path}`} aria-expanded={open}
+            disabled={busy} onClick={() => expand(item.path)}>{open ? <ChevronDown size={13}/> : <ChevronRight size={13}/>}</button>}
+          <label title={`${item.path}${inherited ? ' · 已包含在其他排除范围中，可在「已选范围」中取消' : ''}`}>
+            <input type="checkbox" aria-label={`排除文件夹 ${item.path}`} checked={exact || inherited}
+              ref={el => { if (el) el.indeterminate = partial; }} disabled={busy || inherited}
+              onChange={e => toggle(item.path, e.target.checked)}/>
+            <Folder size={15}/><span>{item.name}</span>
+          </label>
+          {inherited && <small>已包含</small>}
+          {partial && <small>已选子目录</small>}
+        </div>
+        {open && !leaf && <div className="directory-children">{render(item.path, depth + 1)}</div>}
+      </div>;
+    });
+  };
   const submit = async (preview: boolean) => {
     setBusy(true); setError('');
     try {
       const result = await api<NonNullable<typeof impact>>(`/folders/${folder.id}/exclusions`, 'POST',
-        { rules: draft.split('\n').map(s => s.trim()).filter(Boolean), preview });
+        { rules: draft, preview });
       if (preview) setImpact(result);
       else { await saved(); close(); }
     } catch (e) { setError(message(e)); }
     finally { setBusy(false); }
   };
-  return <div className="modal-backdrop" onClick={close}><section className="organization-modal" role="dialog" aria-label="目录排除" onClick={e => e.stopPropagation()}>
-    <div className="panel-heading"><div><span className="eyebrow">SCAN SCOPE</span><h2>排除子目录</h2></div><button aria-label="关闭目录排除" onClick={close}><X size={20}/></button></div>
-    <p className="organization-description"><Folder size={14}/> {folder.name}<br/>{folder.path}</p>
-    <label className="form-label" htmlFor="exclusion-rules">每行一个目录</label>
-    <textarea id="exclusion-rules" aria-label="排除规则" value={draft} disabled={busy} onChange={e => change(e.target.value)} placeholder={'node_modules\nbuild\nComfyUI/output'} rows={7}/>
-    <p className="organization-description">单个名称（如 build）排除任意层级的同名目录；带 / 的路径从当前关联目录开始匹配。排除后保留文件、标签、收藏与集合关系，取消排除可恢复。</p>
-    <button className="text-action" disabled={busy} onClick={() => change([...new Set([...draft.split('\n').filter(Boolean), 'node_modules', 'build', 'dist', 'release', '__pycache__'])].join('\n'))}>填入常见开发目录</button>
-    {impact && <div className="impact" role="status">已入库文件中：将排除 {impact.excluded_files} 个（新增 {impact.newly_excluded} 个），恢复 {impact.restored_files} 个。尚未入库的目录将在扫描时跳过。</div>}
-    {error && <p className="asset-error" role="alert">{error}</p>}
-    <div className="modal-actions"><button disabled={busy} onClick={() => submit(true)}>预览影响</button><button className="primary" disabled={busy || !impact} onClick={() => submit(false)}>保存排除规则</button></div>
+  const dismiss = () => { if (!busy) close(); };
+  return <div className="modal-backdrop" onClick={dismiss}><section className="organization-modal exclusion-modal" role="dialog" aria-modal="true" aria-label="目录排除"
+    onClick={e => e.stopPropagation()} onKeyDown={e => { if (e.key === 'Escape') { e.stopPropagation(); dismiss(); } }}>
+    <div className="panel-heading"><div><h2>排除子目录</h2><p>勾选要跳过的文件夹，展开后可单独选择子目录。</p></div>
+      <button aria-label="关闭目录排除" autoFocus disabled={busy} onClick={dismiss}><X size={20}/></button></div>
+    <div className="exclusion-content">
+      <div className="exclusion-root"><Folder size={16}/><div><strong>{folder.name}</strong><p title={folder.path}>{folder.path}</p></div></div>
+      <div className="directory-toolbar"><span>当前目录的文件夹</span>
+        <button aria-label="刷新文件夹列表" title="重新读取目录" disabled={busy || !!tree['']?.loading} onClick={refresh}><RefreshCw size={12}/>刷新</button></div>
+      <div className="directory-tree" role="group" aria-label="可排除的文件夹">{render()}</div>
+      {draft.length > 0 && <details className="exclusion-selections">
+        <summary>已选范围 <span>{draft.length}</span><ChevronDown size={12}/></summary>
+        <div>{draft.map(rule => <label className="exclusion-selected" key={rule}>
+          <input type="checkbox" aria-label={`取消排除 ${rule.startsWith('./') ? rule.slice(2) : rule}`} checked disabled={busy}
+            onChange={() => change(draft.filter(r => r !== rule))}/>
+          <span>{rule.startsWith('./') ? rule.slice(2) : rule}<small>{!rule.startsWith('./') && !rule.includes('/')
+            ? '已有设置 · 所有层级的同名文件夹' : '相对于当前关联目录 · 包含子文件夹'}</small></span>
+        </label>)}</div>
+      </details>}
+    </div>
+    <footer className="exclusion-footer">
+      <p className="organization-description">选中父目录会包含其子目录。排除后保留原文件、标签、收藏与集合，取消勾选可恢复。</p>
+      {impact && <div className="impact" role="status">已入库文件中：将排除 {impact.excluded_files} 个（新增 {impact.newly_excluded} 个），恢复 {impact.restored_files} 个。尚未入库的目录将在扫描时跳过。</div>}
+      {error && <p className="asset-error" role="alert">{error}</p>}
+      <div className="modal-actions"><button disabled={busy} onClick={() => submit(true)}>预览影响</button><button className="primary" disabled={busy || !impact} onClick={() => submit(false)}>保存排除规则</button></div>
+    </footer>
   </section></div>;
 }
 

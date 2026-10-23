@@ -98,7 +98,9 @@ handle('connection', async () => ready);
 handle('api', async (route, method = 'GET', body) => {
   await ready;
   if (!endpoint) throw new Error('本地服务已退出，请重新启动应用');
-  if (typeof route !== 'string' || !/^\/(summary|health|search|folders|assets|collections)(\/[a-zA-Z0-9_-]+)*$/.test(route)
+  const directoryRead = method === 'GET' && typeof route === 'string' &&
+    /^\/folders\/[a-zA-Z0-9_-]+\/directories\?parent=(?:[a-zA-Z0-9_.!~*'()-]|%[a-fA-F0-9]{2})*$/.test(route);
+  if (typeof route !== 'string' || (!directoryRead && !/^\/(summary|health|search|folders|assets|collections)(\/[a-zA-Z0-9_-]+)*$/.test(route))
     || !['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw new Error('无效请求');
   const response = await fetch(endpoint + route, {
     method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

@@ -10,7 +10,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from typing import Literal
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -89,6 +89,12 @@ class ScanRequest(BaseModel):
 @app.post("/folders/{fid}/scan")
 def scan_folder(fid: str, body: ScanRequest):
     return app.state.catalog.rescan(fid, retry=body.retry)
+
+
+@app.get("/folders/{fid}/directories")
+def folder_directories(fid: str, parent: str = Query(default="", max_length=8192)):
+    return app.state.catalog.folder_directories(fid, parent)
+
 
 class ExclusionsRequest(BaseModel):
     rules: list[str] = Field(max_length=100)
