@@ -1,11 +1,11 @@
 import { useLayoutEffect, useState } from 'react';
-import { Check, Monitor, Moon, Sun } from 'lucide-react';
+import { Check, Grid2X2, Monitor, Moon, Square, Sun } from 'lucide-react';
 import './appearance.css';
 
 type Mode = 'light' | 'dark' | 'system';
-type Appearance = { mode: Mode; accent: string };
+type Appearance = { mode: Mode; accent: string; previewBackground: 'solid' | 'checker' };
 const storageKey = 'prism.appearance.v1';
-const defaults: Appearance = { mode: 'light', accent: '#3b6ee8' };
+const defaults: Appearance = { mode: 'light', accent: '#3b6ee8', previewBackground: 'solid' };
 export const accentPresets = [
   { name: '蓝色', color: '#3b6ee8' }, { name: '绿色', color: '#19836a' },
   { name: '紫色', color: '#8060cf' }, { name: '橙色', color: '#bd6726' },
@@ -19,7 +19,8 @@ function readAppearance(): Appearance {
   try {
     const saved = JSON.parse(localStorage.getItem(storageKey) || 'null');
     return { mode: ['light', 'dark', 'system'].includes(saved?.mode) ? saved.mode : defaults.mode,
-      accent: validColor(saved?.accent) ? saved.accent.toLowerCase() : defaults.accent };
+      accent: validColor(saved?.accent) ? saved.accent.toLowerCase() : defaults.accent,
+      previewBackground: saved?.previewBackground === 'checker' ? 'checker' : 'solid' };
   } catch { return { ...defaults }; }
 }
 const rgb = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16));
@@ -32,7 +33,7 @@ const contrast = (a: string, b: string) => {
   return (values[0] + .05) / (values[1] + .05);
 };
 function readableAccent(accent: string, dark: boolean) {
-  const source = rgb(accent), target = dark ? 255 : 0, background = dark ? '#22262d' : '#f1f3f6';
+  const source = rgb(accent), target = dark ? 255 : 0, background = dark ? '#29292b' : '#eeeeec';
   for (let step = 0; step <= 20; step++) {
     const color = '#' + source.map(v => Math.round(v + (target - v) * step / 20).toString(16).padStart(2, '0')).join('');
     if (contrast(color, background) >= 4.8) return color;
@@ -44,6 +45,7 @@ function applyAppearance(value: Appearance) {
   const dark = value.mode === 'dark' || value.mode === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches;
   root.dataset.theme = dark ? 'dark' : 'light';
   root.dataset.appearance = value.mode;
+  root.dataset.previewBackground = value.previewBackground;
   root.style.setProperty('--accent', value.accent);
   root.style.setProperty('--accent-text', readableAccent(value.accent, dark));
   root.style.setProperty('--on-accent', contrast(value.accent, '#ffffff') >= contrast(value.accent, '#000000') ? '#ffffff' : '#000000');
@@ -83,6 +85,12 @@ export function AppearanceSettings({ appearance, setAppearance }: ReturnType<typ
         onChange={e => { const accent = e.target.value; if (validColor(accent)) setAppearance(old => ({ ...old, accent: accent.toLowerCase() })); }}/>
         自定义</label>
     </div></div>
-    <p>主题颜色用于选中状态、按钮与标签。预览图片保留原始颜色。</p>
+    <div className="appearance-row"><span>预览背景</span><div className="theme-modes" role="group" aria-label="预览背景">
+      <button type="button" aria-pressed={appearance.previewBackground === 'solid'}
+        onClick={() => setAppearance(old => ({ ...old, previewBackground: 'solid' }))}><Square size={14}/>纯色</button>
+      <button type="button" aria-pressed={appearance.previewBackground === 'checker'}
+        onClick={() => setAppearance(old => ({ ...old, previewBackground: 'checker' }))}><Grid2X2 size={14}/>透明网格</button>
+    </div></div>
+    <p>主题色用于选中标记与主要操作。透明网格可辅助检查图片透明区域，图片颜色保持不变。</p>
   </section>;
 }

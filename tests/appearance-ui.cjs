@@ -92,13 +92,26 @@ async function contrastCheck() {
 (async () => {
   try {
     await launch(); await theme('light');
+    await expect(page.locator('html')).toHaveAttribute('data-preview-background', 'solid');
+    expect(await page.locator('.asset-image').first().evaluate(el => getComputedStyle(el, '::before').content)).toBe('none');
+    await expect(page.locator('.browse-help>p')).toBeHidden();
+    await page.getByLabel('模型浏览说明').click();
+    await expect(page.locator('.browse-help>p')).toBeVisible();
+    await page.getByLabel('模型浏览说明').click();
     await page.getByLabel('语义搜索').fill('保留未提交的搜索');
     await page.getByRole('button', { name: '素材 色彩参考-1.png', exact: true }).click();
     const selection = await page.locator('.inspector>h2').textContent();
+    await page.evaluate(() => { window.__appearanceImage = document.querySelector('.inspector-preview img'); });
     await openSettings();
     await instance.evaluate(() => { global.__appearanceRequests = []; });
     await expect(page.getByRole('button', { name: '浅色', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await screenshot('appearance-light.png');
+    await page.getByRole('button', { name: '透明网格', exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-preview-background', 'checker');
+    expect(await page.locator('.asset-image').first().evaluate(el => getComputedStyle(el, '::before').content)).toBe('""');
+    expect(await page.evaluate(() => document.querySelector('.inspector-preview img') === window.__appearanceImage)).toBe(true);
+    await page.getByRole('button', { name: '纯色', exact: true }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-preview-background', 'solid');
     for (const mode of ['深色', '浅色']) {
       await page.getByRole('button', { name: mode, exact: true }).click();
       await theme(mode === '深色' ? 'dark' : 'light');
@@ -139,7 +152,7 @@ async function contrastCheck() {
     await instance.evaluate(() => { global.__appearanceRequests = []; });
     await screenshot('appearance-stage-light.png');
     await page.emulateMedia({ colorScheme: 'dark' }); await theme('dark');
-    await expect.poll(() => page.evaluate(() => getComputedStyle(document.querySelector('.model-canvas')).backgroundColor)).toBe('rgb(34, 38, 46)');
+    await expect.poll(() => page.evaluate(() => getComputedStyle(document.querySelector('.model-canvas')).backgroundColor)).toBe('rgb(32, 32, 34)');
     expect(await page.evaluate(() => document.querySelector('.model-canvas canvas') === window.__appearanceCanvas)).toBe(true);
     await expect(page.getByLabel('线框', { exact: true })).toBeChecked();
     expect((await instance.evaluate(() => global.__appearanceRequests)).filter(p => p !== '/summary')).toEqual([]);
@@ -147,18 +160,25 @@ async function contrastCheck() {
     await page.getByTitle('关闭预览', { exact: true }).click();
     await openSettings();
     await page.getByRole('button', { name: '深色', exact: true }).click();
+    await page.getByRole('button', { name: '透明网格', exact: true }).click();
     await instance.close(); instance = null;
     await launch(); await theme('dark'); await openSettings();
     await expect(page.getByLabel('自定义主题颜色')).toHaveValue('#4d8a83');
     await expect(page.getByRole('button', { name: '深色', exact: true })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: '透明网格', exact: true })).toHaveAttribute('aria-pressed', 'true');
     for (const corrupt of ['not json', '{"mode":"unknown","accent":"red"}']) {
       await page.evaluate(value => localStorage.setItem('prism.appearance.v1', value), corrupt);
       await page.reload(); await theme('light');
       await expect(page.locator('.asset-card')).toHaveCount(4);
       expect(await page.evaluate(() => document.documentElement.style.getPropertyValue('--accent'))).toBe('#3b6ee8');
+      await expect(page.locator('html')).toHaveAttribute('data-preview-background', 'solid');
     }
+    await page.evaluate(() => localStorage.setItem('prism.appearance.v1', '{"mode":"dark","accent":"#19836a"}'));
+    await page.reload(); await theme('dark');
+    await expect(page.locator('html')).toHaveAttribute('data-preview-background', 'solid');
+    await expect(page.locator('.asset-card')).toHaveCount(4);
     expect(errors).toEqual([]);
-    console.log(`APPEARANCE_UI_OK: modes, all presets, custom color contrast, OS changes, persistence, corrupt storage, narrow window, retained selection/search, no catalog requests or 3D canvas reload; screenshots ${output}`);
+    console.log(`APPEARANCE_UI_OK: modes, all presets, custom color contrast, OS changes, background toggle and persistence, legacy/corrupt storage, collapsed help, narrow window, retained selection/search, no catalog requests or image/3D canvas reload; screenshots ${output}`);
   } finally {
     if (instance) await instance.close();
     if (output !== temp) fs.rmSync(temp, { recursive: true, force: true });

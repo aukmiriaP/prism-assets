@@ -420,7 +420,7 @@ function App() {
         </nav>
         <form className="search-box" onSubmit={e => { e.preventDefault(); if (draft.trim()) search({ text: draft.trim() }, draft.trim()); }}>
           <Search size={21}/><input ref={searchRef} aria-label="语义搜索" value={draft} onChange={e => setDraft(e.target.value)}
-            placeholder="搜索名称、标签或画面描述，例如：赛琳娜 / 冷色石制拱门"/>
+            placeholder="搜索素材名称、标签或画面描述"/>
           {draft && <button type="button" title="清空搜索" onClick={clearSearch}><X size={15}/></button>}
           {!query.image_path && !query.asset_id && <select className="search-strategy" aria-label="文字搜索方式"
             value={strategy} onChange={e => changeStrategy(e.target.value as SearchStrategy)}>
@@ -465,13 +465,15 @@ function App() {
         </>}
         {searching && <label>候选上限<select aria-label="候选上限" value={topK} onChange={e => setTopK(+e.target.value)}>
           {[20, 50, 100, 200].map(k => <option key={k} value={k}>前 {k} 项</option>)}</select></label>}
+        {summary.models > 0 && <details className="browse-help"><summary aria-label="模型浏览说明"><CircleHelp size={12}/>说明</summary>
+          <p>{scope === 'images' ? '独立图片不展示模型附属贴图。模型文件、材质与贴图请到左侧“3D 模型”中查看。'
+            : groupedResources ? '点击模型资产组，查看 PMX / FBX / GLB / glTF 主文件、材质、附属贴图与辅助文件。'
+            : modelGroup ? '模型主文件和贴图在此分组内展示；材质绑定、文档和使用约定可在右侧模型详情中查看。'
+            : '模型文件、材质与附属贴图统一收纳在“3D 模型”；收藏、标签与虚拟集合仍可单独整理文件。'}</p>
+        </details>}
         <span aria-live="polite">{loading ? '更新中…' : busy && result.items.length === 0 ? '' : groupedResources && !searching ? `${result.total} 个模型分组 · 主文件、材质与附属资源`
           : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? `${query.text && result.keyword_total !== undefined ? ` · 关键词命中 ${result.keyword_total} 项` : ''} · 返回 ${result.total} 个候选` : ''}`}</span>
       </div>
-      {summary.models > 0 && <div className="component-note">{scope === 'images' ? '独立图片不展示模型附属贴图。模型文件、材质与贴图请到左侧“3D 模型”中查看。'
-        : groupedResources ? '点击模型资产组，查看 PMX / FBX / GLB / glTF 主文件、材质、附属贴图与辅助文件。'
-        : modelGroup ? '模型主文件和贴图在此分组内展示；材质绑定、文档和使用约定可在右侧模型详情中查看。'
-        : '模型文件、材质与附属贴图统一收纳在“3D 模型”；收藏、标签与虚拟集合仍可单独整理文件。'}</div>}
       {scope === 'missing' && <div className="component-note">失联表示旧路径不存在。扫描会按文件内容找回已移动的图片；多个候选且有整理信息时，请在详情选择新位置。</div>}
       {filtersOpen && <div className="filters">
         <input aria-label="文件名筛选" placeholder="文件名包含…" value={filters.name} onChange={e => { setFilters({ ...filters, name: e.target.value }); setLimit(200); }}/>

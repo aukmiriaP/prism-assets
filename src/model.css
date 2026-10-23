@@ -14,18 +14,19 @@
 .model-toolbar>span{margin-left:auto;color:var(--muted);font-size:11px}
 .model-caveat{margin:0;padding:0 22px 14px;color:var(--muted);font-size:11px}
 .model-metrics{display:flex;gap:8px;margin-bottom:14px}
-.model-metrics span{flex:1;border:1px solid var(--line);background:var(--surface-subtle);border-radius:7px;padding:9px 5px;font-size:10px;color:var(--muted);text-align:center}
+.model-metrics span{flex:1;background:var(--surface-subtle);border-radius:5px;padding:9px 5px;font-size:10px;color:var(--muted);text-align:center}
 .model-metrics b{display:block;font-size:15px;color:var(--text);margin-bottom:5px;font-weight:500}
-.resource-tabs{display:flex;gap:4px;background:var(--surface-subtle);padding:4px;border:1px solid var(--line);border-radius:7px;margin-bottom:12px}
+.resource-tabs{display:flex;gap:4px;background:var(--surface-subtle);padding:3px;border-radius:5px;margin-bottom:12px}
 .resource-tabs button{flex:1;font-size:11px;padding:7px 3px;border-radius:4px}
-.resource-tabs .active{background:var(--accent-soft);color:var(--accent-text)}
+.resource-tabs .active{background:var(--control);color:var(--text)}
 .material-list,.resource-list{max-height:340px;overflow:auto}
 .material-list details{border-bottom:1px solid var(--line);padding:9px 0}
 .material-list summary{font-size:12px;cursor:pointer;overflow-wrap:anywhere}
 .material-list summary span{float:right;font-size:10px;color:var(--muted)}
 .material-binding{display:flex;flex-wrap:wrap;gap:5px;font-size:11px;padding:9px 0 0 8px}
 .material-binding small{width:100%;color:var(--muted)}
-.material-binding button{color:var(--accent-text);text-align:left;overflow-wrap:anywhere}
+.material-binding button{color:var(--text-secondary);text-align:left;overflow-wrap:anywhere}
+.material-binding button:hover{color:var(--accent-text)}
 .material-binding em{color:var(--warning);font-size:10px}
 .material-list p,.resource-list>p{font-size:11px;color:var(--muted);line-height:1.6}
 .resource-row{display:flex;align-items:center;gap:9px;padding:9px 0;border-bottom:1px solid var(--line)}
