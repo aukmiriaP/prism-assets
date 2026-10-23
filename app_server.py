@@ -129,7 +129,7 @@ def remove_collection(cid: str):
 
 
 class Filters(BaseModel):
-    kind: Literal["", "image", "model", "texture", "material"] = ""
+    kind: Literal["", "image", "model", "texture", "material", "motion"] = ""
     include_components: bool = False
     exclude_components: bool = False
     folder_id: str = ""
@@ -214,6 +214,10 @@ def search(body: SearchRequest):
         raise ValueError("请输入文字或选择一张参考图片")
     if body.text.strip() and body.strategy == "keyword":
         return catalog.text_assets(body.text.strip(), body.filters.model_dump(), strategy="keyword")
+    if body.text.strip() and body.filters.kind == "motion":
+        result = catalog.text_assets(body.text.strip(), body.filters.model_dump(), strategy="keyword")
+        result["warning"] = "动作按文件名、目录与标签检索"
+        return result
     if body.asset_id:
         result = catalog.list_assets(body.filters.model_dump(), catalog.similar_vector(body.asset_id))
         result["mode"] = "asset"
@@ -319,10 +323,47 @@ def thumbnail(aid: str):
     return FileResponse(path, media_type="image/webp", headers={"Cache-Control": "private, max-age=86400"})
 
 
+@app.get("/assets/{aid}/motion")
+def motion_data(aid: str):
+    return app.state.catalog.motion_payload(aid)
+
+
+@app.get("/assets/{aid}/motion-companions")
+def motion_companions(aid: str):
+    return app.state.catalog.motion_companions(aid)
+
+
+@app.get("/assets/{aid}/motion-files/{key}")
+def motion_file(aid: str, key: str):
+    from motion_catalog import AUDIO
+    path, item = app.state.catalog.motion_companion_file(aid, key)
+    if item["kind"] == "document":
+        data = path.read_bytes()
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("cp932", errors="replace")
+        return {"name": path.name, "text": text}
+    return FileResponse(path, media_type=AUDIO[path.suffix.lower()])
+
+
+@app.get("/assets/{aid}/motion-model")
+def motion_model(aid: str):
+    _, path = app.state.catalog.playback_source(aid, "model", {"pmx"})
+    return FileResponse(path, media_type="application/octet-stream")
+
+
+@app.get("/assets/{aid}/motion-textures/{index}/preview")
+def motion_texture(aid: str, index: int):
+    return image_response(app.state.catalog.motion_texture(aid, index))
+
+
 @app.get("/assets/{aid}/preview")
 def preview(aid: str):
     catalog = app.state.catalog
     asset = catalog.get_asset(aid)
+    if asset["kind"] == "motion":
+        raise ValueError("动作文件请使用人形动作播放器")
     if asset["kind"] == "material":
         path = catalog.thumbs / (asset["thumbnail"] or "not-ready")
     else:

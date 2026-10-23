@@ -19,8 +19,10 @@ from PIL import Image, ImageOps
 from model_assets import MODEL_EXTENSIONS, IMAGE_EXTENSIONS, dependency_stamp, prepare_model, blender_executable
 from search_matching import KeywordMatcher
 from material_catalog import MaterialCatalog
+from motion_catalog import MotionCatalog
+from motion_assets import MOTION_EXTENSIONS, MOTION_PROFILE
 
-EXTENSIONS = IMAGE_EXTENSIONS | MODEL_EXTENSIONS
+EXTENSIONS = IMAGE_EXTENSIONS | MODEL_EXTENSIONS | MOTION_EXTENSIONS
 PROFILE = "embeddinggemma2:1a4ffddb7905d3f63486748deabe091a01fb6201:mlx0.7.9:768:exif-rgb-2048:v1"
 
 
@@ -68,7 +70,7 @@ class Inference:
                 self.queue.task_done()
 
 
-class Catalog(MaterialCatalog):
+class Catalog(MotionCatalog, MaterialCatalog):
     def __init__(self, root: Path, inference=None, watch=True):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -122,6 +124,7 @@ class Catalog(MaterialCatalog):
             ("assets", "kind", "TEXT NOT NULL DEFAULT 'image'"),
             ("assets", "model_data", "TEXT"),
             ("assets", "material_data", "TEXT"),
+            ("assets", "motion_data", "TEXT"),
             ("assets", "dependency_stamp", "TEXT"),
             ("assets", "archived", "INTEGER NOT NULL DEFAULT 0"),
             ("assets", "replacements", "TEXT NOT NULL DEFAULT '[]'"),
@@ -135,6 +138,10 @@ class Catalog(MaterialCatalog):
         if old and old[0]["value"] != PROFILE:
             self.execute("UPDATE assets SET vector=NULL,status='pending' WHERE archived=0")
         self.execute("INSERT OR REPLACE INTO meta VALUES('profile',?)", (PROFILE,))
+        motion_profile = self.rows("SELECT value FROM meta WHERE key='motion_profile'")
+        if not motion_profile or motion_profile[0]["value"] != MOTION_PROFILE:
+            self.execute("UPDATE assets SET status='pending',vector=NULL WHERE kind='motion' AND archived=0")
+            self.execute("INSERT OR REPLACE INTO meta VALUES('motion_profile',?)", (MOTION_PROFILE,))
         self.execute("UPDATE jobs SET status='interrupted',error='上次退出时中断，已安排恢复' "
                      "WHERE status IN ('queued','running')")
         self.inference = inference or Inference()
@@ -441,7 +448,7 @@ class Catalog(MaterialCatalog):
                     walk_errors.append(exc)
                     continue
                 old = existing.get(key)
-                kind = "model" if path.suffix.lower() in MODEL_EXTENSIONS else "image"
+                kind = "model" if path.suffix.lower() in MODEL_EXTENSIONS else "motion" if path.suffix.lower() in MOTION_EXTENSIONS else "image"
                 stamp = (dependency_stamp(path, json.loads(old["model_data"]) if old and old["model_data"] else None)
                          if kind == "model" else None)
                 if (old and old["mtime"] == stat.st_mtime_ns and old["size"] == stat.st_size
@@ -504,6 +511,8 @@ class Catalog(MaterialCatalog):
             (SELECT id FROM jobs ORDER BY created DESC LIMIT 100) AND status NOT IN ('queued','running')""")
 
     def index_one(self, aid, path, mtime, size):
+        if path.suffix.lower() in MOTION_EXTENSIONS:
+            return self.index_motion(aid, path, mtime, size)
         if self.rows("SELECT kind FROM assets WHERE id=?", (aid,))[0]["kind"] == "material":
             return self.index_material(aid)
         if path.suffix.lower() in MODEL_EXTENSIONS:
@@ -606,6 +615,7 @@ class Catalog(MaterialCatalog):
         item.pop("vector", None)
         item["model"] = json.loads(item.pop("model_data") or "null")
         item["material"] = json.loads(item.pop("material_data", None) or "null")
+        item["motion"] = json.loads(item.pop("motion_data", None) or "null")
         item["tags"] = json.loads(item["tags"])
         item["favorite"] = bool(item["favorite"])
         item["replacements"] = json.loads(item["replacements"])
@@ -733,7 +743,7 @@ class Catalog(MaterialCatalog):
 
     def asset_filters(self, filters):
         clauses, params = ["a.excluded=0", "a.archived=0"], []
-        if filters.get("kind") in ("image", "model", "material"):
+        if filters.get("kind") in ("image", "model", "material", "motion"):
             clauses.append("a.kind=?")
             params.append(filters["kind"])
         if filters.get("kind") == "texture":
@@ -1102,6 +1112,7 @@ class Catalog(MaterialCatalog):
         return {"counts": counts, "total": sum(v for k, v in counts.items() if k != "missing"),
                 "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "materials": self.rows("SELECT count(*) n FROM assets WHERE kind='material' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
+                "motions": self.rows("SELECT count(*) n FROM assets WHERE kind='motion' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.archived=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
                 "independent_images": self.rows("""SELECT count(*) n FROM assets a WHERE a.kind='image'
                     AND a.excluded=0 AND a.archived=0 AND a.status!='missing' AND NOT """ + self.owned_sql())[0]["n"],

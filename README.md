@@ -1,7 +1,7 @@
 # Prism Assets · 棱镜素材库
 
 面向美术素材的本地桌面检索应用。关联文件夹后，用中英文描述或参考图片寻找素材，
-浏览原图、3D 模型与 PBR 材质，整理标签、收藏与虚拟集合。索引与模型推理完全在本机运行。当前版本 0.3.1。
+浏览原图、3D 模型、PBR 材质与人形动作，整理标签、收藏与虚拟集合。索引与模型推理完全在本机运行。当前版本 0.3.1。
 
 ## 直接使用
 
@@ -100,6 +100,30 @@ Prism 中的索引、收藏、标签与集合成员关系，原文件保留。�
 0.3.1 修复 PMX 交互预览的透明材质遮挡错误：此前裙摆、面部与眼睛可能出现
 看似贴图缺失的穿透。预览改用保留透明度的 Alpha Hash 与深度写入，
 可直接修复已有 0.3 模型缓存，无需重新导入或重建索引；FBX/glTF 原有透明混合行为保持原样。
+
+## 人形动作预览（开发版）
+
+关联含 `.vmd` 的目录后，左侧「动作」显示身体、表情和镜头文件，双击打开播放器。
+选择库内已索引、已绑定的 PMX 人形角色即可查看蒙皮动作，无需重新绑定。
+时间轴支持拖动、逐帧、0.5/1/1.5/2 倍速和循环；加载后暂停，手动开始播放。
+可叠加骨架、自由旋转、复位机位，以及选择同目录的追加表情、镜头和音乐。
+原始镜头与自由机位可随时切换；音乐默认关闭，包内 TXT 说明可直接阅读。
+
+按实际运动轨道显示骨骼匹配率；超过 20% 的有效骨骼缺失时停止预览，
+避免把错配动作当成可靠结果。VMD 自带 IK 开关、角色显示开关参与逐帧采样。
+动作检索匹配文件名、相对目录、标签和集合，不生成动作 embedding。
+动作沿用标签、收藏、集合、排除目录、更新和失败重试；原文件保持只读。
+
+首版支持 VMD 0002 与 MMD 人形 PMX，不提供自动绑定、跨骨架重定向、动物动作或导出。
+材质为基础显示；骨骼/UV/材质 morph、球面贴图、MMD 特效、头发和衣裙物理尚未完整支持。
+灯光和自阴影轨道只解析并提示，使用固定舞台灯光；正交镜头暂按透视投影显示。
+浏览器预览使用 Three.js 蒙皮近似 PMX，不能视为 MMD 最终渲染器。
+PMX 播放源上限 128 MB，VMD 上限 32 MB、20 万记录和一小时；纹理限模型包内已索引资源。
+本地音乐支持 WAV/MP3/OGG/M4A（取决于系统解码器），上限 256 MB，TXT 上限 256 KB。
+
+本机验证样本来自 `datasets/motion/EX_HAPPY`，搭配丽芙、赛琳娜、锁暝三个本地角色。
+素材版权与使用范围以包内说明为准，动作、模型、音乐和纹理不随仓库再分发。
+交互采用「选择角色观看动作」的方式，未核实模之屋播放器的完整界面，不宣称逐项复刻。
 
 ## 3D 模型与材质资源（0.3）
 
@@ -288,6 +312,10 @@ npm run test:exclusions-ui
 npm run test:appearance-ui
 npm run test:ui
 
+# 需本机已有 EX_HAPPY 动作与三个 PMX 样本（素材不随仓库分发）
+npm run test:motions
+npm run test:motions-ui
+
 # 使用日常库的只读副本验证真实模型分组与恢复，不复制 embedding 权重
 .venv/bin/python tests/recovery_snapshot.py --output .git/recovery-check
 PRISM_TEST_REUSE=.git/recovery-check node tests/recovery-ui.cjs
@@ -327,6 +355,8 @@ PRISM_BUNDLE_MODEL=1 npm run package
 | `catalog.py` | 增量扫描、SQLite、缩略图、任务恢复、文件监视、向量排序 |
 | `model_assets.py`、`model_worker.py` | PMX 解析、资源关联、Blender 转换与双视角渲染 |
 | `src/model-viewer.tsx` | Three.js 交互预览、材质与贴图详情 |
+| `motion_assets.py`、`motion_catalog.py` | 有界 VMD 解析、增量动作索引与受控本地附件 |
+| `src/motion-rig.ts`、`src/motion-viewer.tsx` | PMX 蒙皮/IK、确定性时间采样与动作播放器 |
 | `material_assets.py`、`material_catalog.py` | PBR 通道识别/转换、目录库集成、版本缓存与导出 |
 | `material_worker.py`、`blender_material.py` | Blender 材质球渲染与共用节点构建 |
 | `src/materials.tsx`、`src/materials.css` | PBR 导入/编辑、交互预览及详情 |

@@ -5,7 +5,7 @@ const root = fs.realpathSync(path.resolve(__dirname, '..'));
 let server, desktop, stopped = false, restarting = false, changed = false, timer;
 const watchers = [];
 const sources = new Set(['app_server.py', 'catalog.py', 'embed.py', 'model_assets.py', 'model_worker.py', 'search_matching.py',
-  'material_assets.py', 'material_catalog.py', 'material_worker.py', 'blender_material.py']);
+  'material_assets.py', 'material_catalog.py', 'material_worker.py', 'blender_material.py', 'motion_assets.py', 'motion_catalog.py']);
 
 function launch() {
   if (stopped) return;

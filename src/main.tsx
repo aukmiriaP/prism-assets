@@ -2,7 +2,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight, CircleHelp, Copy,
+import { Activity, Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight, CircleHelp, Copy,
   Folder, FolderOpen, FolderPlus, Grid2X2, HardDrive, Heart, Image as ImageIcon,
   ImagePlus, LoaderCircle, Maximize2, Palette, RefreshCw, Search, Settings2, SlidersHorizontal,
   Sparkles, Tag, Trash2, TriangleAlert, X } from 'lucide-react';
@@ -10,6 +10,7 @@ import type { Asset, Collection, Connection, Folder as FolderType, MaterialInspe
 import { CollectionEditor, CollectionTree, ExclusionEditor, orderedCollections } from './organization';
 import { ModelDetails, ModelViewer } from './model-viewer';
 import { MaterialDetails, MaterialEditor, MaterialViewer } from './materials';
+import { MotionDetails, MotionViewer, motionLabel, motionTime } from './motion-viewer';
 import { listLocation, useNavigation, type BrowseView } from './navigation';
 import { ViewResults } from './view-results';
 import { AppearanceSettings, useAppearance } from './appearance';
@@ -54,6 +55,8 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsPage, setSettingsPage] = useState<typeof settingsPages[number]['id']>('appearance');
   const [preview, setPreview] = useState(false);
+  const motionClick = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (motionClick.current) clearTimeout(motionClick.current); }, []);
   const [previewError, setPreviewError] = useState(false);
   const [materialEditor, setMaterialEditor] = useState<{ inspection: MaterialInspection; asset?: Asset } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -95,7 +98,7 @@ function App() {
   const collectionOptions = orderedCollections(summary?.collections || []);
   const collectionAncestors = collection?.ancestor_ids?.map(id => summary?.collections.find(c => c.id === id)).filter((c): c is Collection => Boolean(c)) || [];
   const childCollections = summary?.collections.filter(c => c.parent_id === collection?.id) || [];
-  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', materials: 'PBR 材质', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || (scope.startsWith('collection:') ? '已删除集合' : '全部素材')));
+  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', materials: 'PBR 材质', motions: '动作', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || (scope.startsWith('collection:') ? '已删除集合' : '全部素材')));
   const checkedAssets = result.items.filter(a => checked.includes(a.id));
   const checkedIds = [...new Set(checkedAssets.flatMap(a => a.member_ids || [a.id]))];
   const columns = Math.max(2, Math.floor((gridWidth - 48) / (cardSize + 14)));
@@ -178,7 +181,7 @@ function App() {
     const hasSearch = Boolean(view.query.text || view.query.image_path || view.query.asset_id);
     const models = view.scope === 'models' || view.scope === 'textures';
     const params = { ...view.filters, limit: hasSearch ? topK : view.limit, top_k: topK,
-      kind: models ? !view.modelGroup || view.resourceRelation === 'model' ? 'model' : '' : view.scope === 'images' ? 'image' : view.scope === 'materials' ? 'material' : '',
+      kind: models ? !view.modelGroup || view.resourceRelation === 'model' ? 'model' : '' : view.scope === 'images' ? 'image' : view.scope === 'materials' ? 'material' : view.scope === 'motions' ? 'motion' : '',
       exclude_components: view.scope === 'images', include_components: Boolean(view.modelGroup),
       model_id: view.modelGroup?.id || '', relation: view.resourceRelation === 'model' ? '' : view.resourceRelation,
       include_model: Boolean(view.modelGroup) && (!view.resourceRelation || view.resourceRelation === 'model'),
@@ -244,6 +247,7 @@ function App() {
     setChecked([]); scrollRef.current?.scrollTo(0, 0);
   };
   const browse = (changes: Partial<BrowseView>, keepScroll = false) => {
+    if (motionClick.current) { clearTimeout(motionClick.current); motionClick.current = null; }
     const next = { ...navigation.view, ...changes };
     const reload = listLocation(next) !== listLocation(navigation.view);
     navigation.navigate(changes, scrollRef.current?.scrollTop || 0, keepScroll);
@@ -309,7 +313,7 @@ function App() {
         ids: ids || [], refresh_models: refreshModels,
         filters: { ...filters, folder_id: folder?.id || '', collection_id: collection?.id || '',
           tag: activeTag, favorite: scope === 'favorites',
-          kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : scope === 'materials' ? 'material' : '',
+          kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : scope === 'materials' ? 'material' : scope === 'motions' ? 'motion' : '',
           include_components: Boolean(modelGroup), model_id: modelGroup?.id || '',
           relation: resourceRelation === 'model' ? '' : resourceRelation,
           include_model: Boolean(modelGroup) && (!resourceRelation || resourceRelation === 'model'),
@@ -413,6 +417,7 @@ function App() {
         <button title={`${summary.total} 个资产与文件，其中 ${summary.components} 张贴图收纳在所属资产下`} className={scope === 'all' && !activeTag ? 'active' : ''} onClick={() => chooseScope('all')}><Grid2X2 size={17}/>全部素材<span>{summary.total - summary.components}</span></button>
         <button title="按模型分组，包含模型文件、材质和附属贴图" className={inModels ? 'active' : ''} onClick={() => modelGroup ? returnToModels() : chooseScope('models')}><Box size={17}/>3D 模型<span>{summary.models}</span></button>
         <button className={scope === 'materials' ? 'active' : ''} onClick={() => chooseScope('materials')}><Palette size={17}/>PBR 材质<span>{summary.materials || 0}</span></button>
+        <button className={scope === 'motions' ? 'active' : ''} onClick={() => chooseScope('motions')}><Activity size={17}/>动作<span>{summary.motions || 0}</span></button>
         <button title="独立图片文件数，不包含资产附属贴图" className={scope === 'images' ? 'active' : ''} onClick={() => chooseScope('images')}><ImageIcon size={17}/>独立图片<span>{summary.independent_images}</span></button>
         <button className={scope === 'favorites' ? 'active' : ''} onClick={() => chooseScope('favorites')}><Heart size={17}/>我的收藏<span>{summary.favorites}</span></button>
       </nav>
@@ -511,7 +516,7 @@ function App() {
       {filtersOpen && <div className="filters">
         <input aria-label="文件名筛选" placeholder="文件名包含…" value={filters.name} onChange={e => { setFilters({ ...filters, name: e.target.value }); setLimit(200); }}/>
         <select aria-label="格式筛选" value={filters.ext} onChange={e => { setFilters({ ...filters, ext: e.target.value }); setLimit(200); }}>
-          <option value="">全部格式</option>{['pmx', 'fbx', 'glb', 'gltf', 'png', 'jpg', 'webp', 'tif', 'tiff', 'bmp', 'tga', 'sph', 'spa'].map(f => <option key={f} value={f}>{f.toUpperCase()}</option>)}</select>
+          <option value="">全部格式</option>{['pmx', 'fbx', 'glb', 'gltf', 'vmd', 'png', 'jpg', 'webp', 'tif', 'tiff', 'bmp', 'tga', 'sph', 'spa'].map(f => <option key={f} value={f}>{f.toUpperCase()}</option>)}</select>
         <select aria-label="分辨率筛选" value={filters.min_width} onChange={e => { setFilters({ ...filters, min_width: +e.target.value }); setLimit(200); }}>
           <option value="0">全部分辨率</option><option value="1024">宽度 ≥ 1K</option><option value="2048">宽度 ≥ 2K</option><option value="4096">宽度 ≥ 4K</option></select>
         <select aria-label="素材排序" disabled={searching} value={filters.sort} onChange={e => setFilters({ ...filters, sort: e.target.value })}>
@@ -563,11 +568,19 @@ function App() {
                 style={{ transform: `translateY(${row.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))` }}>
                 {result.items.slice(row.index * columns, (row.index + 1) * columns).map(asset => <div role="button" tabIndex={0}
                   aria-label={`${groupedResources ? '模型分组' : '素材'} ${asset.name}`} key={asset.id} className={`asset-card ${selected?.id === asset.id ? 'selected' : ''} ${checked.includes(asset.id) ? 'checked' : ''}`}
-                  onClick={e => { if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); } else if (groupedResources) enterModelGroup(asset); else openAsset(asset); }}
-                  onDoubleClick={() => { if (!multiMode && !groupedResources) { openAsset(asset); setPreview(true); } }}
+                  onClick={e => {
+                    if (motionClick.current) clearTimeout(motionClick.current);
+                    if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); }
+                    else if (groupedResources) enterModelGroup(asset);
+                    else if (asset.kind === 'motion' && !selected) {
+                      // Let a double click finish before the inspector reflows this card.
+                      motionClick.current = setTimeout(() => openAsset(asset), 220);
+                    } else openAsset(asset);
+                  }}
+                  onDoubleClick={() => { if (motionClick.current) clearTimeout(motionClick.current); if (!multiMode && !groupedResources) { openAsset(asset); setPreview(true); } }}
                   onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (multiMode) selectAsset(asset, e.shiftKey); else if (groupedResources) enterModelGroup(asset); else openAsset(asset); } }}>
                   <div className="asset-image" style={{ height: cellSize }}>
-                    {asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : asset.kind === 'model' ? <Box size={35}/> : <ImageIcon size={35}/>}
+                    {asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : asset.kind === 'motion' ? <Activity size={35}/> : asset.kind === 'model' ? <Box size={35}/> : <ImageIcon size={35}/>}
                     <span className="format-badge">{asset.ext}</span>
                     {groupedResources && asset.status === 'ready' && (asset.copy_count || 0) < 2 && <span className="copy-badge">模型 + {asset.resource_count || 0} 张外置贴图</span>}
                     {multiMode && <input className="selection-check" type="checkbox" aria-label={`选择 ${asset.name}`} checked={checked.includes(asset.id)}
@@ -581,7 +594,7 @@ function App() {
                     {asset.score !== undefined && (!query.text || strategy === 'semantic') && <span className="score-badge">{asset.score.toFixed(3)}</span>}
                     {asset.status !== 'ready' && <span className={`asset-state ${asset.status}`} title={asset.error || ''}>{labels[asset.status]}</span>}
                   </div>
-                  <div className="asset-caption"><strong>{asset.name}</strong><span>{asset.kind === 'material' ? `PBR · ${Object.keys(asset.material?.config.maps || {}).length} 通道` : groupedResources ? `${asset.ext.toUpperCase()} · ${asset.model ? `${asset.model.materials.length} 材质` : labels[asset.status] || '准备中'}` : asset.kind === 'model' ? `模型主文件${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开资产组' : bytes(asset.size)}</span></div>
+                  <div className="asset-caption"><strong>{asset.name}</strong><span>{asset.kind === 'motion' ? `${motionLabel(asset)} · ${motionTime(asset.motion?.duration || 0)}` : asset.kind === 'material' ? `PBR · ${Object.keys(asset.material?.config.maps || {}).length} 通道` : groupedResources ? `${asset.ext.toUpperCase()} · ${asset.model ? `${asset.model.materials.length} 材质` : labels[asset.status] || '准备中'}` : asset.kind === 'model' ? `模型主文件${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开资产组' : bytes(asset.size)}</span></div>
                 </div>)}
               </div>)}
             </div>
@@ -590,7 +603,7 @@ function App() {
         </main>
         {selected && <aside className="inspector">
           <div className="inspector-top"><span>素材详情</span><button title="关闭详情" onClick={() => setSelected(null)}><X size={17}/></button></div>
-          <button className="inspector-preview" onClick={() => setPreview(true)}>{selected.thumbnail ? <img src={imageUrl(selected)} alt="选中素材预览"/> : <ImageIcon size={40}/>}<span><Maximize2 size={14}/> {selected.kind === 'material' ? '旋转查看材质' : selected.kind === 'model' ? '旋转查看 3D' : '大图预览'}</span></button>
+          <button className="inspector-preview" onClick={() => setPreview(true)}>{selected.thumbnail ? <img src={imageUrl(selected)} alt="选中素材预览"/> : selected.kind === 'motion' ? <Activity size={40}/> : <ImageIcon size={40}/>}<span><Maximize2 size={14}/> {selected.kind === 'motion' ? '选择角色预览动作' : selected.kind === 'material' ? '旋转查看材质' : selected.kind === 'model' ? '旋转查看 3D' : '大图预览'}</span></button>
           <h2>{selected.name}</h2><div className="detail-status"><i className={selected.status}/> {labels[selected.status]}</div>
           {selected.error && <p className="asset-error">{selected.error}</p>}
           {selected.status === 'missing' && <div className="detail-section"><h3>恢复文件关联</h3>
@@ -600,18 +613,19 @@ function App() {
           </div>}
           <div className="detail-actions"><button className="primary" disabled={selected.status === 'error'
             ? retryBusy || summary.jobs.some(j => j.folder_id === selected.folder_id && ['queued', 'running'].includes(j.status))
-            : selected.status !== 'ready'} onClick={() => selected.status === 'error' ? retry([selected.id]) : similar(selected)}>
-            {selected.status === 'error' ? <><RefreshCw size={15}/> 重试索引</> : <><Sparkles size={15}/> 查找相似</>}
+            : selected.status !== 'ready'} onClick={() => selected.status === 'error' ? retry([selected.id]) : selected.kind === 'motion' ? setPreview(true) : similar(selected)}>
+            {selected.status === 'error' ? <><RefreshCw size={15}/> 重试索引</> : selected.kind === 'motion' ? <><Activity size={15}/> 预览动作</> : <><Sparkles size={15}/> 查找相似</>}
           </button><button title={selected.favorite ? '取消收藏' : '收藏素材'} onClick={() => run(() => patch(selected, { favorite: !selected.favorite }))}><Heart size={17} fill={selected.favorite ? 'currentColor' : 'none'}/></button></div>
           {selected.kind === 'model' && selected.status !== 'error' && <button className="text-action" title="重新生成此模型的封面与检索预览，保留标签、收藏和集合"
             disabled={selected.status !== 'ready' || retryBusy || summary.jobs.some(j => j.folder_id === selected.folder_id && ['queued', 'running'].includes(j.status))}
             onClick={() => retry([selected.id], true)}><RefreshCw size={13}/>重新生成预览</button>}
           {selected.kind === 'model' && <ModelDetails asset={selected} connection={connection}/>}
+          {selected.kind === 'motion' && <MotionDetails asset={selected}/>}
           {selected.kind === 'material' && <MaterialDetails asset={selected} edit={() => editMaterial(selected)}
             exported={() => notify('已导出 Blender 材质包')} removed={() => { setSelected(null); setPreview(false); resultCache.current.clear(); loadSummary(); setRefresh(n => n + 1); notify('已移除材质，原始贴图保留'); }}/>}
           {selected.kind === 'model' && !modelGroup && <button className="text-action" onClick={() => enterModelGroup(selected)}>打开模型资产组</button>}
           {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属资产</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
-          <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'material' ? '贴图通道' : selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'material' ? Object.keys(selected.material?.config.maps || {}).length : selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.kind === 'material' ? 'PBR 材质包' : selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>
+          <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'motion' ? '时长' : selected.kind === 'material' ? '贴图通道' : selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'motion' ? motionTime(selected.motion?.duration || 0) : selected.kind === 'material' ? Object.keys(selected.material?.config.maps || {}).length : selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.kind === 'material' ? 'PBR 材质包' : selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>
           <div className="detail-section"><h3>文件副本</h3>
             <p className="organization-description">详情中的标签和收藏只修改当前文件。批量整理可处理选中项的全部副本。</p>
             <button className="text-action" onClick={() => run(async () => { const data = await api<{ items: Asset[] }>(`/assets/${selected.id}/copies`); setCopies(data.items); })}>查看全部未排除副本</button>
@@ -688,7 +702,7 @@ function App() {
           {settingsPage === 'help' && <>
             <div className="settings-page-heading"><h3>帮助与关于</h3><p>版本、运行环境与支持范围。</p></div>
             <div className="settings-info"><HardDrive size={22}/><div><strong>Prism Assets 0.3.1 · Apple Silicon</strong><p>图文检索与索引完全本地运行。支持图片、PMX、FBX、GLB、glTF 模型与 PBR 材质包。</p><p>模型预览和材质球封面需安装 Blender：{summary.blender_available ? '已检测到' : '未检测到，请安装到“应用程序”后重试索引'}。材质编辑中的交互预览可直接使用。</p></div></div>
-            <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型的两张外观预览图，不判断拓扑或动作。PMX 展示基础材质，MMD 特效不完整还原；当前不播放动画。图片限制 100 MB / 4000 万像素，模型限制 512 MB。暂不解析视频与 PSD。</p></div>
+            <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型外观；动作按名称、目录与标签检索。VMD 人形动作可搭配 PMX 骨架预览，支持表情、镜头与本地音乐。基础材质与部分变形近似展示，暂不模拟头发、衣裙物理及 MMD 特效。图片限制 100 MB / 4000 万像素，静态模型 512 MB；动作播放器 PMX 上限 128 MB、VMD 上限 32 MB / 一小时。暂不解析视频与 PSD。</p></div>
           </>}
         </div>
       </div>
@@ -708,7 +722,7 @@ function App() {
       setMaterialEditor(null); resultCache.current.clear(); browse({ scope: 'materials', selected: asset, modelGroup: null, activeTag: '', query: {}, draft: '' });
       loadSummary(); setRefresh(n => n + 1); notify('材质已保存，正在生成封面与检索索引');
     }}/>}
-    {preview && selected && (selected.kind === 'material' ? <MaterialViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : selected.kind === 'model' ? <ModelViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : <div className="lightbox" role="dialog" aria-label="大图预览" onClick={() => setPreview(false)}><button title="关闭预览" onClick={() => setPreview(false)}><X size={23}/></button>{previewError ? <p>原图无法读取，请检查文件是否移动或磁盘是否连接。</p> : <img src={imageUrl(selected, true)} alt={selected.name} onError={() => setPreviewError(true)} onClick={e => e.stopPropagation()}/>}<div>{selected.name}<span>{selected.width} × {selected.height} · ESC 关闭</span></div></div>)}
+    {preview && selected && (selected.kind === 'motion' ? <MotionViewer key={selected.id} asset={selected} connection={connection} close={() => setPreview(false)}/> : selected.kind === 'material' ? <MaterialViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : selected.kind === 'model' ? <ModelViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : <div className="lightbox" role="dialog" aria-label="大图预览" onClick={() => setPreview(false)}><button title="关闭预览" onClick={() => setPreview(false)}><X size={23}/></button>{previewError ? <p>原图无法读取，请检查文件是否移动或磁盘是否连接。</p> : <img src={imageUrl(selected, true)} alt={selected.name} onError={() => setPreviewError(true)} onClick={e => e.stopPropagation()}/>}<div>{selected.name}<span>{selected.width} × {selected.height} · ESC 关闭</span></div></div>)}
     {dragging && <div className="drop-overlay" onDragLeave={() => setDragging(false)}><ImagePlus size={48}/><h2>放入参考图片，寻找相似素材</h2><p>图片仅在本机处理</p></div>}
     {notice && <div className="toast" role="status"><span>{notice}</span><button title="关闭提示" onClick={() => setNotice('')}><X size={15}/></button></div>}
   </div>;
