@@ -70,6 +70,8 @@ function App() {
   const anchor = useRef<string | null>(null);
   const searchRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const taskPanelRef = useRef<HTMLDivElement>(null);
+  const taskToggleRef = useRef<HTMLButtonElement>(null);
   const [gridWidth, setGridWidth] = useState(800);
   const requestId = useRef(0);
   const restoreScroll = useRef<number | null>(null);
@@ -120,6 +122,15 @@ function App() {
     return () => clearTimeout(timer);
   }, [notice]);
   useEffect(() => { setPreviewError(false); }, [preview, selected?.id]);
+  useEffect(() => {
+    if (!tasksOpen) return;
+    const dismiss = (event: PointerEvent) => {
+      if (event.target instanceof Node && !taskPanelRef.current?.contains(event.target)
+        && !taskToggleRef.current?.contains(event.target)) setTasksOpen(false);
+    };
+    document.addEventListener('pointerdown', dismiss, true);
+    return () => document.removeEventListener('pointerdown', dismiss, true);
+  }, [tasksOpen]);
   useEffect(() => {
     const key = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === 'k') { event.preventDefault(); searchRef.current?.focus(); }
@@ -399,7 +410,7 @@ function App() {
       <div className="sidebar-bottom">
         {Boolean(summary.counts.error) && <button className="warning-link" onClick={() => chooseScope('error')}><TriangleAlert size={14}/> {summary.counts.error} 个文件索引失败</button>}
         {Boolean(summary.counts.missing) && <button className="muted-link" onClick={() => chooseScope('missing')}><Folder size={14}/> {summary.counts.missing} 个文件已失联</button>}
-        <button className="local-status" onClick={() => setTasksOpen(true)}><div className={`status-dot ${summary.model === 'error' ? 'error' : ''}`}/><div>本地运行<span>{summary.model === 'loading' ? '正在加载模型' : summary.model === 'ready' ? '模型已就绪 · 离线可用' : summary.model === 'error' ? '模型加载失败' : '搜索时自动加载模型'}</span></div><ChevronRight size={15}/></button>
+        <div className="local-status" role="status" aria-label="本地运行"><div className={`status-dot ${summary.model === 'error' ? 'error' : ''}`}/><div>本地运行<span>{summary.model === 'loading' ? '正在加载模型' : summary.model === 'ready' ? '模型已就绪 · 离线可用' : summary.model === 'error' ? '模型加载失败' : '搜索时自动加载模型'}</span></div></div>
         <button className="settings-link" onClick={() => setSettingsOpen(true)}><Settings2 size={16}/> 设置与帮助 <span>⌘ K 搜索</span></button>
       </div>
     </aside>
@@ -409,7 +420,8 @@ function App() {
           {collectionAncestors.map(c => <React.Fragment key={c.id}><button aria-label={`上级集合 ${c.name}`} title={c.path}
             onClick={() => chooseScope(`collection:${c.id}`)}>{c.name}</button><ChevronRight size={13}/></React.Fragment>)}
           {inModels && modelGroup && <>3D 模型 <ChevronRight size={13}/></>} <strong>{title}</strong></div>
-        <button className={`task-toggle ${running ? 'working' : ''}`} onClick={() => setTasksOpen(v => !v)}>
+        <button ref={taskToggleRef} className={`task-toggle ${running ? 'working' : ''}`} aria-expanded={tasksOpen}
+          aria-controls="index-tasks" onClick={() => setTasksOpen(v => !v)}>
           {running ? <LoaderCircle size={15} className="spin"/> : <Check size={15}/>}
           {running ? `正在索引 ${running.done}/${running.total || '…'}` : '索引任务'}</button>
       </header>
@@ -610,12 +622,13 @@ function App() {
       </div>
       <footer className="footer"><span><HardDrive size={12}/> {summary.total} 个文件 · {summary.counts.ready || 0} 个已索引</span><span>{loading ? searching ? '正在搜索…' : '正在读取列表…' : searching ? query.text && strategy !== 'semantic' ? strategy === 'keyword' ? '关键词匹配' : '关键词优先 · 语义补充' : '按视觉相关度排序' : '目录变动自动同步'} <i/> 空格预览</span></footer>
     </section>
-    {tasksOpen && <div className="task-panel"><div className="panel-heading"><div><span className="eyebrow">BACKGROUND ACTIVITY</span><h2>索引任务</h2></div><button title="关闭任务" onClick={() => setTasksOpen(false)}><X size={18}/></button></div>
+    {tasksOpen && <div ref={taskPanelRef} id="index-tasks" className="task-panel" role="region" aria-label="索引任务"><div className="panel-heading"><div><span className="eyebrow">BACKGROUND ACTIVITY</span><h2>索引任务</h2></div><button title="关闭任务" onClick={() => setTasksOpen(false)}><X size={18}/></button></div>
+      <div className="task-content">
       {summary.model_error && <p className="asset-error">{summary.model_error}</p>}
       <p className="panel-note">索引在后台进行，搜索请求会优先处理。</p>
       {summary.jobs.length ? summary.jobs.map(j => <div className="job" key={j.id}><div><Folder size={16}/><strong>{j.name}</strong><span className={j.failed ? 'text-warning' : ''}>{labels[j.status]}</span></div>
         <progress max={j.total || 1} value={j.done}/><div className="job-meta"><span>{j.done} / {j.total} 项 {j.failed > 0 && `· ${j.failed} 项失败`}</span>{['partial', 'failed', 'interrupted'].includes(j.status) && <button onClick={() => { const f = summary.folders.find(f => f.id === j.folder_id); if (f) scan(f); }}><RefreshCw size={12}/> 重试</button>}</div>{j.error && <p className="asset-error">{j.error}</p>}</div>)
-        : <div className="task-empty"><Check size={25}/><p>暂无索引任务</p></div>}</div>}
+        : <div className="task-empty"><Check size={25}/><p>暂无索引任务</p></div>}</div></div>}
     {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><section className="settings-modal" role="dialog" aria-label="设置与帮助" onClick={e => e.stopPropagation()}>
       <div className="panel-heading"><div><h2>设置与帮助</h2></div><button title="关闭设置" onClick={() => setSettingsOpen(false)}><X size={20}/></button></div>
       <div className="settings-content">

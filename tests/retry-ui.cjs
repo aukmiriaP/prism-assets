@@ -22,14 +22,36 @@ let instance;
       BrowserWindow.getAllWindows()[0].webContents.setBackgroundThrottling(false);
     });
     await expect(page.getByRole('button', { name: /关联素材文件夹/ }).first()).toBeVisible({ timeout: 60000 });
+    const taskToggle = page.locator('.task-toggle');
+    const taskPanel = page.getByRole('region', { name: '索引任务', exact: true });
+    await expect(page.getByRole('button', { name: /本地运行/ })).toHaveCount(0);
+    await page.getByRole('status', { name: '本地运行', exact: true }).click();
+    await expect(taskPanel).toHaveCount(0);
+    await taskToggle.click();
+    await expect(taskPanel).toBeVisible();
+    await expect(taskToggle).toHaveAttribute('aria-expanded', 'true');
+    await taskPanel.getByText('暂无索引任务').click();
+    await expect(taskPanel).toBeVisible();
+    await taskToggle.click();
+    await expect(taskPanel).toHaveCount(0);
+    await expect(taskToggle).toHaveAttribute('aria-expanded', 'false');
+    await taskToggle.click(); await page.keyboard.press('Escape');
+    await expect(taskPanel).toHaveCount(0);
     await instance.evaluate(({ dialog }, fixture) => {
       dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [fixture] });
     }, fixtures);
     await page.getByRole('button', { name: /关联素材文件夹/ }).first().click();
-    await page.getByRole('button', { name: '关闭任务' }).click();
+    await expect(taskPanel).toBeVisible();
+    await page.locator('.gallery').click({ position: { x: 10, y: 10 } });
+    await expect(taskPanel).toHaveCount(0);
     await page.getByRole('button', { name: '2 个文件索引失败', exact: true }).click({ timeout: 30000 });
     await page.getByRole('button', { name: '素材 wrapped.glb', exact: true }).click();
     await expect(page.locator('.inspector .asset-error')).toContainText('CTV1');
+    await taskToggle.click();
+    await page.getByRole('button', { name: '素材 broken.png', exact: true }).click();
+    await expect(taskPanel).toHaveCount(0);
+    await expect(page.locator('.inspector>h2')).toHaveText('broken.png');
+    await page.getByRole('button', { name: '素材 wrapped.glb', exact: true }).click();
     await page.getByRole('button', { name: '重试索引', exact: true }).click();
     await expect(page.locator('.toast')).toContainText('已安排 1 项重试');
     await expect(page.getByRole('button', { name: '关闭任务' })).toBeVisible();
@@ -60,8 +82,34 @@ let instance;
       const summary = await page.evaluate(() => window.prism.api('/summary'));
       return summary.jobs[0].total === 1 && summary.jobs[0].done === 1;
     }).toBe(true);
+    // Accumulate enough real failure records to exercise a scrolling task list.
+    for (let i = 0; i < 5; i++) {
+      const previousJob = await page.evaluate(async () => (await window.prism.api('/summary')).jobs[0].id);
+      await taskPanel.getByRole('button', { name: '重试', exact: true }).first().click();
+      await expect(taskPanel).toBeVisible();
+      await expect.poll(async () => {
+        const summary = await page.evaluate(() => window.prism.api('/summary'));
+        return summary.jobs[0].id !== previousJob && summary.jobs[0].total === 2
+          && summary.jobs[0].done === 2 && summary.jobs[0].failed === 2;
+      }).toBe(true);
+    }
+    await instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1040, 680));
+    const headingY = (await taskPanel.locator('.panel-heading').boundingBox()).y;
+    const scroller = taskPanel.locator('.task-content');
+    expect(await scroller.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    await scroller.evaluate(el => { el.scrollTop = el.scrollHeight; });
+    const panelBounds = await taskPanel.boundingBox(), scrollBounds = await scroller.boundingBox();
+    expect(scrollBounds.x + scrollBounds.width).toBeLessThanOrEqual(panelBounds.x + panelBounds.width - 5);
+    expect(scrollBounds.y + scrollBounds.height).toBeLessThanOrEqual(panelBounds.y + panelBounds.height - 5);
+    expect((await taskPanel.locator('.panel-heading').boundingBox()).y).toBe(headingY);
+    await expect(page.getByRole('button', { name: '关闭任务' })).toBeVisible();
+    const png = await instance.evaluate(async ({ BrowserWindow }) =>
+      (await BrowserWindow.getAllWindows()[0].webContents.capturePage(undefined, { stayAwake: true })).toPNG().toString('base64'));
+    fs.writeFileSync(path.join(os.tmpdir(), 'prism-task-panel-fixed.png'), Buffer.from(png, 'base64'));
+    await page.getByRole('button', { name: '关闭任务' }).click();
+    await expect(taskPanel).toHaveCount(0);
     expect(errors).toEqual([]);
-    console.log('RETRY_UI_OK: real single, multiselect and filtered retry clicks; tasks, error details and state refresh');
+    console.log('RETRY_UI_OK: real single, multiselect, filtered and in-panel retries; one task entry, status display, toggle/Escape/outside dismissal, retained asset clicks, inset task scrolling and fixed close button');
   } finally {
     if (instance) await instance.close();
     fs.rmSync(temp, { recursive: true, force: true });
