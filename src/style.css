@@ -174,7 +174,7 @@ h1,h2,h3,p{margin:0}
 .detail-actions>.primary{flex:1;padding:8px 12px;font-size:11px;background:var(--control)!important;border-color:var(--line)!important;color:var(--control-text)!important}
 .detail-actions>button:not(.primary){border-radius:5px;width:34px;color:var(--text-secondary);background:var(--control)}
 .detail-section{border-top:1px solid var(--line);margin-top:18px;padding-top:16px}
-.detail-section>h3,.settings-modal>h3{font-size:11px;font-weight:550;color:var(--text-secondary);margin-bottom:12px;display:flex;align-items:center;gap:6px}
+.detail-section>h3,.settings-content>h3{font-size:11px;font-weight:550;color:var(--text-secondary);margin-bottom:12px;display:flex;align-items:center;gap:6px}
 .detail-section dl{display:grid;grid-template-columns:1fr 1fr;row-gap:11px;font-size:11px}
 .detail-section dt{color:var(--muted)}
 .detail-section dd{text-align:right;margin:0;color:var(--text-secondary)}
@@ -206,7 +206,9 @@ h1,h2,h3,p{margin:0}
 .task-empty{text-align:center;color:var(--success);margin:40px 0}
 .task-empty>p{margin-top:12px;font-size:12px}
 .modal-backdrop{position:absolute;inset:0;z-index:20;display:flex;align-items:center;justify-content:center;background:var(--overlay);backdrop-filter:blur(5px);padding:28px}
-.settings-modal{width:650px;max-width:100%;max-height:90vh;overflow:auto;padding:26px;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.settings-modal{display:flex;flex-direction:column;width:650px;max-width:100%;max-height:min(90vh,calc(100vh - 56px));overflow:hidden;background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow)}
+.settings-modal>.panel-heading{flex-shrink:0;padding:26px 26px 0}
+.settings-content{min-height:0;overflow-y:auto;overscroll-behavior:contain;margin:0 6px 6px 0;padding:0 20px 20px 26px}
 .settings-modal .panel-heading h2{font-size:19px;margin-top:0}
 .settings-info{display:flex;gap:14px;padding:0 0 20px;margin:4px 0 20px;border-bottom:1px solid var(--line);color:var(--muted)}
 .settings-info strong{font-size:12px;font-weight:500;color:var(--text)}

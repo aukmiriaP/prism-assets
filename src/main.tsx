@@ -618,6 +618,7 @@ function App() {
         : <div className="task-empty"><Check size={25}/><p>暂无索引任务</p></div>}</div>}
     {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><section className="settings-modal" role="dialog" aria-label="设置与帮助" onClick={e => e.stopPropagation()}>
       <div className="panel-heading"><div><h2>设置与帮助</h2></div><button title="关闭设置" onClick={() => setSettingsOpen(false)}><X size={20}/></button></div>
+      <div className="settings-content">
       <AppearanceSettings {...appearance}/>
       <div className="settings-info"><HardDrive size={22}/><div><strong>Prism Assets 0.3.1 · Apple Silicon</strong><p>图文检索与索引完全本地运行。支持静态图片与 TGA，以及 PMX、FBX、GLB、glTF 模型。模型预览需安装 Blender：{summary.blender_available ? '已检测到' : '未检测到，请安装到“应用程序”后重试索引'}。</p></div></div>
       <h3>关联目录</h3>{summary.folders.map(f => <div className="folder-setting" key={f.id}><Folder size={18}/><div><strong>{f.name}</strong><p>{f.path}</p><small>{f.status === 'online' ? '在线' : '目录不可访问'} · {f.count} 个文件 · 已排除 {f.excluded_count} 个</small></div>
@@ -627,6 +628,7 @@ function App() {
       <button className="add-folder inline" onClick={addFolder}><FolderPlus size={16}/> 关联文件夹</button>
       <h3>本地数据</h3><p className="settings-copy">索引、标签、收藏和缩略图存放在下方目录。备份前请退出应用，再复制整个目录。</p><button className="data-path" onClick={() => window.prism.reveal(summary.data_dir)}>{summary.data_dir}<FolderOpen size={15}/></button>
       <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型的两张外观预览图，不判断拓扑或动作。PMX 展示基础材质，MMD 特效不完整还原；当前不播放动画。图片限制 100 MB / 4000 万像素，模型限制 512 MB。暂不解析视频与 PSD。</p></div>
+      </div>
     </section></div>}
     {collectionEditor && <CollectionEditor collection={collectionEditor === 'new' ? undefined : collectionEditor}
       collections={summary.collections} parentId={newCollectionParent} close={() => setCollectionEditor(null)}

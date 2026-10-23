@@ -142,6 +142,28 @@ async function contrastCheck() {
     expect(bounds.x).toBeGreaterThanOrEqual(0); expect(bounds.y).toBeGreaterThanOrEqual(0);
     expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
     expect(bounds.y + bounds.height).toBeLessThanOrEqual(viewport.height);
+    const scroller = page.locator('.settings-content');
+    const heading = page.locator('.settings-modal>.panel-heading');
+    const headingBounds = await heading.boundingBox();
+    expect(await scroller.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    for (const mode of ['浅色', '深色']) {
+      await scroller.evaluate(el => { el.scrollTop = 0; });
+      await page.getByRole('button', { name: mode, exact: true }).click();
+      for (const end of ['top', 'bottom']) {
+        await scroller.evaluate((el, end) => { el.scrollTop = end === 'top' ? 0 : el.scrollHeight; }, end);
+        const scrollBounds = await scroller.boundingBox();
+        expect(scrollBounds.y).toBeGreaterThanOrEqual(headingBounds.y + headingBounds.height - 1);
+        expect(scrollBounds.x + scrollBounds.width).toBeLessThanOrEqual(bounds.x + bounds.width - 5);
+        expect(scrollBounds.y + scrollBounds.height).toBeLessThanOrEqual(bounds.y + bounds.height - 5);
+        expect((await heading.boundingBox()).y).toBe(headingBounds.y);
+        expect(await page.locator('.settings-modal').evaluate(el => el.scrollTop)).toBe(0);
+        await expect(page.getByTitle('关闭设置', { exact: true })).toBeVisible();
+        if (end === 'bottom') await expect(page.locator('.settings-content .help-note')).toBeInViewport();
+        await screenshot(`settings-scroll-${mode === '浅色' ? 'light' : 'dark'}-${end}.png`);
+      }
+    }
+    await closeSettings(); await openSettings();
+    expect(await scroller.evaluate(el => el.scrollTop)).toBe(0);
     await page.getByRole('button', { name: '跟随系统', exact: true }).click();
     await closeSettings();
     await page.getByRole('button', { name: '素材 舞台测试.glb', exact: true }).dblclick();
@@ -178,7 +200,7 @@ async function contrastCheck() {
     await expect(page.locator('html')).toHaveAttribute('data-preview-background', 'solid');
     await expect(page.locator('.asset-card')).toHaveCount(4);
     expect(errors).toEqual([]);
-    console.log(`APPEARANCE_UI_OK: modes, all presets, custom color contrast, OS changes, background toggle and persistence, legacy/corrupt storage, collapsed help, narrow window, retained selection/search, no catalog requests or image/3D canvas reload; screenshots ${output}`);
+    console.log(`APPEARANCE_UI_OK: modes, all presets, custom color contrast, OS changes, background toggle and persistence, legacy/corrupt storage, collapsed help, narrow window, inset scroll bounds at both ends, fixed close button, retained selection/search, no catalog requests or image/3D canvas reload; screenshots ${output}`);
   } finally {
     if (instance) await instance.close();
     if (output !== temp) fs.rmSync(temp, { recursive: true, force: true });
