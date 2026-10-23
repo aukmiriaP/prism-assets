@@ -13,11 +13,11 @@ import { MaterialDetails, MaterialEditor, MaterialViewer } from './materials';
 import { listLocation, useNavigation, type BrowseView } from './navigation';
 import { ViewResults } from './view-results';
 import { AppearanceSettings, useAppearance } from './appearance';
+import { LibraryState } from './library-state';
 import './style.css';
 import './organization.css';
 import './navigation.css';
 import './search.css';
-import './listing.css';
 
 const api = <T,>(route: string, method?: string, body?: unknown) => window.prism.api<T>(route, method, body);
 const bytes = (n: number) => n > 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
@@ -394,8 +394,11 @@ function App() {
     setCollectionIntent('navigation'); setCollectionEditor(item);
   };
 
-  if (fatal) return <div className="boot"><Aperture size={40}/><h1>本地服务暂不可用</h1><p>{fatal}</p><button className="primary" onClick={() => window.prism.restart()}>重新启动应用</button></div>;
-  if (!connection || !summary) return <div className="boot"><div className="brand-mark"><Aperture size={34}/></div><h1>PRISM <span>ASSETS</span></h1><p><LoaderCircle className="spin" size={15}/> 正在启动本地素材库…</p><small>首次启动需要准备运行环境，请稍候</small></div>;
+  if (fatal) return <LibraryState className="boot" title="本地服务暂不可用" description={fatal}>
+    <button className="primary" onClick={() => window.prism.restart()}>重新启动应用</button>
+  </LibraryState>;
+  if (!connection || !summary) return <LibraryState className="boot" loading title="正在启动本地素材库…"
+    description="首次启动需要准备运行环境，请稍候"><span className="state-brand">PRISM ASSETS</span></LibraryState>;
 
   return <div className="app" onDragOver={e => { e.preventDefault(); if (e.dataTransfer.types.includes('Files')) setDragging(true); }}
     onDrop={e => { e.preventDefault(); setDragging(false); const file = e.dataTransfer.files[0]; if (file) {
@@ -543,17 +546,18 @@ function App() {
       </div>}
       <div className="content-row">
         <main className="gallery" ref={scrollRef} aria-label="素材网格">
-          {loading && <div className="loading-line"/>}
-          {result.items.length === 0 ? busy ? loading ? <div className="gallery-read-state" role="status">
-            <LoaderCircle className="spin" size={17}/>{searching ? summary.model === 'loading' ? '正在准备本地模型…' : '正在搜索…' : '正在读取素材列表…'}
-          </div> : null : collection && !searching ? <div className="collection-empty"><FolderOpen size={30}/>
-            <h2>本集合还没有直属素材</h2><p>{childCollections.length ? '点击上方子集合继续浏览，或从素材详情与多选栏加入文件。' : '从素材详情与多选栏加入文件，或点击“新建子集合”继续组织。'}</p></div> : <div className="empty">
-            <div className="empty-art"><div/><div/><div><Aperture size={42}/></div></div>
-            <div className="eyebrow">{summary.folders.length ? 'ROOM FOR DISCOVERY' : 'A HOME FOR YOUR IDEAS'}</div>
-            <h2>{!summary.folders.length ? '让灵感，有迹可循。' : running ? '你的素材正在入库' : '这里还没有匹配的素材'}</h2>
-            <p>{!summary.folders.length ? '关联本地素材文件夹，用一句描述或一张图片，\n找回你需要的那份灵感。' : running ? '缩略图与语义索引会陆续出现。你可以继续浏览。' : '试试调整筛选条件、切换目录，或关联更多图片。'}</p>
-            {!summary.folders.length && <><button className="primary" onClick={addFolder}><FolderPlus size={17}/> 关联素材文件夹</button><div className="empty-foot">图片 · PMX · FBX · GLB · glTF<span>仅建立索引，保留原始目录</span></div></>}
-          </div> : <>
+          {loading && result.items.length > 0 && <div className="loading-line"/>}
+          {result.items.length === 0 ? busy ? loading ? <LibraryState className="gallery-read-state" loading
+            title={searching ? summary.model === 'loading' ? '正在准备本地模型…' : '正在搜索…' : '正在读取素材列表…'}
+            description={searching ? '结果会在准备好后显示。' : undefined}/>
+            : null : collection && !searching ? <LibraryState className="collection-empty" title="本集合还没有直属素材"
+              description={childCollections.length ? '点击上方子集合继续浏览，或从素材详情与多选栏加入文件。' : '从素材详情与多选栏加入文件，或点击“新建子集合”继续组织。'}/>
+            : <LibraryState className="empty" loading={Boolean(running)}
+              title={!summary.folders.length ? '让灵感，有迹可循。' : running ? '你的素材正在入库' : '这里还没有匹配的素材'}
+              description={!summary.folders.length ? '关联本地素材文件夹，用一句描述或一张图片，\n找回你需要的那份灵感。' : running ? '缩略图与语义索引会陆续出现。你可以继续浏览。' : '试试调整筛选条件、切换目录，或关联更多素材。'}>
+              {!summary.folders.length && <><button className="primary" onClick={addFolder}><FolderPlus size={15}/> 关联素材文件夹</button>
+                <div className="empty-foot">图片 · 3D 模型 · PBR 材质<span>仅建立索引，保留原始目录</span></div></>}
+            </LibraryState> : <>
             <div className="virtual-grid" style={{ height: virtual.getTotalSize() }}>
               {virtual.getVirtualItems().map(row => <div key={row.index} className="grid-row"
                 style={{ transform: `translateY(${row.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))` }}>

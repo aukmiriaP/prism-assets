@@ -1,0 +1,18 @@
+.library-state{height:100%;min-height:230px;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:32px 24px;color:var(--text)}
+.state-symbol{display:block;flex-shrink:0;color:var(--line-strong)}
+.state-symbol rect{fill:var(--surface-subtle);stroke:currentColor;stroke-width:1.15}
+.library-state>h2{font-size:15px;font-weight:500;line-height:1.6;margin:18px 0 0;letter-spacing:0}
+.library-state>p{max-width:360px;color:var(--muted);font-size:11px;line-height:1.9;white-space:pre-line;margin:8px 0 0;overflow-wrap:anywhere}
+.state-actions{display:flex;flex-direction:column;align-items:center;gap:16px;margin-top:20px}
+.state-actions>.primary{font-size:11px;font-weight:450;padding:8px 14px}
+.state-actions .empty-foot{font-size:10px;color:var(--muted);line-height:1.8}
+.state-actions .empty-foot>span{display:block}
+.library-state.boot{height:100vh}
+.library-state.boot>p{max-width:440px}
+.state-brand{color:var(--muted);font-size:10px;letter-spacing:1.5px}
+.state-symbol.is-loading rect{animation:state-tile 2s ease-in-out infinite}
+.state-symbol.is-loading rect:nth-child(2){animation-delay:.2s}
+.state-symbol.is-loading rect:nth-child(3){animation-delay:.4s}
+.state-symbol.is-loading rect:nth-child(4){animation-delay:.6s}
+@keyframes state-tile{0%,75%,100%{opacity:.4}35%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.state-symbol.is-loading rect{animation:none;opacity:1}}
