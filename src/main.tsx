@@ -39,7 +39,7 @@ function App() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const navigation = useNavigation();
   const { scope, activeTag, draft, query, selected, filtersOpen, filters, limit,
-    modelGroup, resourceRelation } = navigation.view;
+    modelGroup, motionGroup, resourceRelation } = navigation.view;
   const field = <K extends keyof BrowseView>(key: K) =>
     (value: React.SetStateAction<BrowseView[K]>) => navigation.update(key, value);
   const setActiveTag = field('activeTag'), setDraft = field('draft'), setSelected = field('selected');
@@ -93,12 +93,13 @@ function App() {
   const strategy = query.strategy || 'hybrid';
   const inModels = scope === 'models' || scope === 'textures';
   const groupedResources = inModels && !modelGroup;
+  const groupedMotions = scope === 'motions' && !motionGroup && !query.image_path && !query.asset_id;
   const folder = summary?.folders.find(f => f.id === scope);
   const collection = summary?.collections.find(c => `collection:${c.id}` === scope);
   const collectionOptions = orderedCollections(summary?.collections || []);
   const collectionAncestors = collection?.ancestor_ids?.map(id => summary?.collections.find(c => c.id === id)).filter((c): c is Collection => Boolean(c)) || [];
   const childCollections = summary?.collections.filter(c => c.parent_id === collection?.id) || [];
-  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', materials: 'PBR 材质', motions: '动作', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || (scope.startsWith('collection:') ? '已删除集合' : '全部素材')));
+  const title = motionGroup?.name || modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', materials: 'PBR 材质', motions: '动作', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || (scope.startsWith('collection:') ? '已删除集合' : '全部素材')));
   const checkedAssets = result.items.filter(a => checked.includes(a.id));
   const checkedIds = [...new Set(checkedAssets.flatMap(a => a.member_ids || [a.id]))];
   const columns = Math.max(2, Math.floor((gridWidth - 48) / (cardSize + 14)));
@@ -184,12 +185,17 @@ function App() {
       kind: models ? !view.modelGroup || view.resourceRelation === 'model' ? 'model' : '' : view.scope === 'images' ? 'image' : view.scope === 'materials' ? 'material' : view.scope === 'motions' ? 'motion' : '',
       exclude_components: view.scope === 'images', include_components: Boolean(view.modelGroup),
       model_id: view.modelGroup?.id || '', relation: view.resourceRelation === 'model' ? '' : view.resourceRelation,
+      motion_package: view.motionGroup?.path || '',
       include_model: Boolean(view.modelGroup) && (!view.resourceRelation || view.resourceRelation === 'model'),
       group_duplicates: groupDuplicates,
       collection_id: view.scope.startsWith('collection:') ? view.scope.slice('collection:'.length) : '',
       tag: view.activeTag, favorite: view.scope === 'favorites',
       status: ['error', 'missing'].includes(view.scope) ? view.scope : '',
       folder_id: summary?.folders.find(f => f.id === view.scope)?.id || '' };
+    if (view.scope === 'motions' && !view.motionGroup && !view.query.image_path && !view.query.asset_id) {
+      const body = { filters: params, text: view.query.text || '' };
+      return { route: '/assets/motion-packages', body, key: hasSearch ? null : JSON.stringify(['motion-packages', body]) };
+    }
     return { route: hasSearch ? '/search' : '/assets/list',
       body: hasSearch ? { ...view.query, filters: params } : params,
       key: hasSearch ? null : JSON.stringify(params) };
@@ -225,7 +231,7 @@ function App() {
       finally { if (current === requestId.current) setBusy(false); }
     }, delay);
     return () => clearTimeout(timer);
-  }, [connection, scope, folder?.id, collection?.id, activeTag, filters, query, limit, topK, groupDuplicates, refresh, countsKey, scanKey, modelGroup?.id, resourceRelation, groupedResources, cacheEpoch, Boolean(summary)]);
+  }, [connection, scope, folder?.id, collection?.id, activeTag, filters, query, limit, topK, groupDuplicates, refresh, countsKey, scanKey, modelGroup?.id, motionGroup?.path, resourceRelation, groupedResources, cacheEpoch, Boolean(summary)]);
   useEffect(() => {
     let stopped = false;
     if (selected) {
@@ -256,13 +262,21 @@ function App() {
     setMultiMode(false); setChecked([]); setPreview(false);
   };
   const chooseScope = (value: string, tag = '') => browse({ scope: value, activeTag: tag,
-    selected: null, modelGroup: null, resourceRelation: '', limit: 200 });
+    selected: null, modelGroup: null, motionGroup: null, resourceRelation: '', limit: 200 });
   const enterModelGroup = (asset: Asset) => browse({ scope: 'models', activeTag: '', flatTextures: false,
-    modelGroup: asset, selected: asset, resourceRelation: '', limit: 200,
+    modelGroup: asset, motionGroup: null, selected: asset, resourceRelation: '', limit: 200,
     query: { strategy }, draft: '', filters: { name: '', ext: '', min_width: 0, sort: 'newest' } });
   const returnToModels = () => browse({ scope: 'models', modelGroup: null, selected: null,
     resourceRelation: '', flatTextures: false, limit: 200, query: { strategy }, draft: '',
     filters: { name: '', ext: '', min_width: 0, sort: 'newest' } });
+  const enterMotionPackage = (asset: Asset) => {
+    if (asset.motion_package) browse({ scope: 'motions', activeTag: '', motionGroup: asset.motion_package,
+      modelGroup: null, selected: null, resourceRelation: '', limit: 200, query: { strategy }, draft: '',
+      filters: { name: '', ext: '', min_width: 0, sort: 'name' } });
+  };
+  const returnToMotions = () => browse({ scope: 'motions', motionGroup: null, selected: null,
+    modelGroup: null, activeTag: '', resourceRelation: '',
+    query: { strategy }, draft: '', limit: 200, filters: { name: '', ext: '', min_width: 0, sort: 'newest' } });
   const openAsset = (asset: Asset) => browse({ selected: asset }, true);
   const moveHistory = (delta: number) => {
     const target = navigation.entries[navigation.index + delta];
@@ -315,6 +329,7 @@ function App() {
           tag: activeTag, favorite: scope === 'favorites',
           kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : scope === 'materials' ? 'material' : scope === 'motions' ? 'motion' : '',
           include_components: Boolean(modelGroup), model_id: modelGroup?.id || '',
+          motion_package: motionGroup?.path || '',
           relation: resourceRelation === 'model' ? '' : resourceRelation,
           include_model: Boolean(modelGroup) && (!resourceRelation || resourceRelation === 'model'),
           exclude_components: scope === 'images' },
@@ -417,7 +432,7 @@ function App() {
         <button title={`${summary.total} 个资产与文件，其中 ${summary.components} 张贴图收纳在所属资产下`} className={scope === 'all' && !activeTag ? 'active' : ''} onClick={() => chooseScope('all')}><Grid2X2 size={17}/>全部素材<span>{summary.total - summary.components}</span></button>
         <button title="按模型分组，包含模型文件、材质和附属贴图" className={inModels ? 'active' : ''} onClick={() => modelGroup ? returnToModels() : chooseScope('models')}><Box size={17}/>3D 模型<span>{summary.models}</span></button>
         <button className={scope === 'materials' ? 'active' : ''} onClick={() => chooseScope('materials')}><Palette size={17}/>PBR 材质<span>{summary.materials || 0}</span></button>
-        <button className={scope === 'motions' ? 'active' : ''} onClick={() => chooseScope('motions')}><Activity size={17}/>动作<span>{summary.motions || 0}</span></button>
+        <button title={`${summary.motion_packages || 0} 个动作包 · ${summary.motions || 0} 个动作文件`} className={scope === 'motions' ? 'active' : ''} onClick={returnToMotions}><Activity size={17}/>动作<span>{summary.motion_packages || 0}</span></button>
         <button title="独立图片文件数，不包含资产附属贴图" className={scope === 'images' ? 'active' : ''} onClick={() => chooseScope('images')}><ImageIcon size={17}/>独立图片<span>{summary.independent_images}</span></button>
         <button className={scope === 'favorites' ? 'active' : ''} onClick={() => chooseScope('favorites')}><Heart size={17}/>我的收藏<span>{summary.favorites}</span></button>
       </nav>
@@ -445,7 +460,8 @@ function App() {
         <div className="breadcrumb" aria-label="当前位置">素材库 <ChevronRight size={13}/>
           {collectionAncestors.map(c => <React.Fragment key={c.id}><button aria-label={`上级集合 ${c.name}`} title={c.path}
             onClick={() => chooseScope(`collection:${c.id}`)}>{c.name}</button><ChevronRight size={13}/></React.Fragment>)}
-          {inModels && modelGroup && <>3D 模型 <ChevronRight size={13}/></>} <strong>{title}</strong></div>
+          {inModels && modelGroup && <>3D 模型 <ChevronRight size={13}/></>}
+          {motionGroup && <><button onClick={returnToMotions}>动作</button><ChevronRight size={13}/></>} <strong>{title}</strong></div>
         <button ref={taskToggleRef} className={`task-toggle ${running ? 'working' : ''}`} aria-expanded={tasksOpen}
           aria-controls="index-tasks" onClick={() => setTasksOpen(v => !v)}>
           {running ? <LoaderCircle size={15} className="spin"/> : <Check size={15}/>}
@@ -467,15 +483,16 @@ function App() {
           <button type="button" title="以图搜图" className="image-search" onClick={chooseImage}><ImagePlus size={19}/><span>以图搜图</span></button>
           <button type="submit" className="search-submit" disabled={!draft.trim()} title="搜索"><ArrowRight size={18}/></button>
         </form>
-        {searching && <div className="search-hint"><Sparkles size={12}/> {query.image_path || query.asset_id ? '按画面相似度寻找素材'
+        {searching && <div className="search-hint"><Sparkles size={12}/> {scope === 'motions' ? '匹配动作包、文件名、目录与标签'
+          : query.image_path || query.asset_id ? '按画面相似度寻找素材'
           : strategy === 'keyword' ? '匹配文件名、标签、所属模型与目录，无需加载模型'
           : strategy === 'semantic' ? '按中英文画面描述寻找相似素材'
           : '名称命中优先 · 语义候选补充 · 拖入图片寻找相似素材'} <span>完全在本机处理</span></div>}
         {searching && result.warning && <p className="search-warning">{result.warning}</p>}
       </div>
-      <div className="library-heading"><div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span>}</h1></div>
+      <div className="library-heading"><div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedMotions ? '个包' : groupedResources ? '组' : '项'}</span>}</h1></div>
         <div className="view-controls">{scope === 'materials' && <button onClick={importMaterial}><Palette size={14}/>导入材质包</button>}<label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
-          <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
+          {!groupedMotions && <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>}
           {collection && <><button onClick={() => newCollection('navigation', collection.id)}><FolderPlus size={14}/>新建子集合</button>
             <button onClick={() => editCollection(collection)}>管理集合</button></>}
           {scope === 'error' && !searching && <button disabled={retryBusy || !result.total} onClick={() => retry()}><RefreshCw size={15}/> 重试当前范围</button>}
@@ -490,11 +507,13 @@ function App() {
           <b>{c.name}</b><small>{c.child_count} 个子集合 · {c.count} 个直属文件</small><ChevronRight size={14}/></button>)}</div>
       </section>}
       {collection && <div className="component-note collection-scope-note">素材列表与计数仅包含直接加入此集合的文件；子集合素材请进入对应子集合查看。</div>}
-      {searching && <div className="query-chip"><span>{query.text ? <Search size={13}/> : <ImageIcon size={13}/>} {query.text || query.label}</span><button onClick={clearSearch}><X size={13}/> 退出搜索</button><small>{query.text && strategy !== 'semantic'
-        ? strategy === 'keyword' ? '仅显示元数据关键词命中' : '关键词命中优先，其余为语义候选'
+      {searching && <div className="query-chip"><span>{query.text ? <Search size={13}/> : <ImageIcon size={13}/>} {query.text || query.label}</span><button onClick={clearSearch}><X size={13}/> 退出搜索</button><small>{query.text && (scope === 'motions' || strategy !== 'semantic')
+        ? scope === 'motions' || strategy === 'keyword' ? '仅显示元数据关键词命中' : '关键词命中优先，其余为语义候选'
         : '按余弦相似度排序；分数不代表正确概率'}</small></div>}
       <div className="result-controls">
-        <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>
+        {!groupedMotions && <label><input type="checkbox" checked={groupDuplicates} onChange={e => setGroupDuplicates(e.target.checked)}/>聚合完全重复项</label>}
+        {motionGroup && <><button className="text-action" onClick={returnToMotions}>返回动作包</button>
+          <button className="text-action" onClick={() => window.prism.reveal(motionGroup.path)}>在 Finder 中查看动作包</button></>}
         {inModels && <>
           {modelGroup && <><button className="text-action" onClick={returnToModels}>返回模型分组</button>
             <button className="text-action" onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${modelGroup.id}`)))}>查看材质与说明</button></>}
@@ -503,13 +522,15 @@ function App() {
         </>}
         {searching && <label>候选上限<select aria-label="候选上限" value={topK} onChange={e => setTopK(+e.target.value)}>
           {[20, 50, 100, 200].map(k => <option key={k} value={k}>前 {k} 项</option>)}</select></label>}
-        {summary.models > 0 && <details className="browse-help"><summary aria-label="模型浏览说明"><CircleHelp size={12}/>说明</summary>
-          <p>{scope === 'images' ? '独立图片不展示模型附属贴图。模型文件、材质与贴图请到左侧“3D 模型”中查看。'
+        {(summary.models > 0 || scope === 'motions') && <details className="browse-help"><summary aria-label={scope === 'motions' ? '动作分组说明' : '模型浏览说明'}><CircleHelp size={12}/>说明</summary>
+          <p>{scope === 'motions' ? '同一文件夹中的 VMD 自动归为一个动作包；不同路径的同名包分别保留。进入包后可预览动作、管理标签、收藏和集合。音乐与说明在动作播放器中查看。'
+            : scope === 'images' ? '独立图片不展示模型附属贴图。模型文件、材质与贴图请到左侧“3D 模型”中查看。'
             : groupedResources ? '点击模型资产组，查看 PMX / FBX / GLB / glTF 主文件、材质、附属贴图与辅助文件。'
             : modelGroup ? '模型主文件和贴图在此分组内展示；材质绑定、文档和使用约定可在右侧模型详情中查看。'
             : '模型文件、材质与附属贴图统一收纳在“3D 模型”；收藏、标签与虚拟集合仍可单独整理文件。'}</p>
         </details>}
-        <span aria-live="polite">{loading ? '更新中…' : busy && result.items.length === 0 ? '' : groupedResources && !searching ? `${result.total} 个模型分组 · 主文件、材质与附属资源`
+        <span aria-live="polite">{loading ? '更新中…' : busy && result.items.length === 0 ? '' : groupedMotions ? `${result.total} 个动作包 · ${result.scope_total || 0} 个动作文件`
+          : groupedResources && !searching ? `${result.total} 个模型分组 · 主文件、材质与附属资源`
           : `${searching ? '检索范围' : '当前范围'} ${result.scope_total ?? result.total} 个文件 · ${result.unique_total ?? result.total} ${groupDuplicates ? '项不同内容' : '个文件条目'}${searching ? `${query.text && result.keyword_total !== undefined ? ` · 关键词命中 ${result.keyword_total} 项` : ''} · 返回 ${result.total} 个候选` : ''}`}</span>
       </div>
       {scope === 'missing' && <div className="component-note">失联表示旧路径不存在。扫描会按文件内容找回已移动的图片；多个候选且有整理信息时，请在详情选择新位置。</div>}
@@ -567,34 +588,37 @@ function App() {
               {virtual.getVirtualItems().map(row => <div key={row.index} className="grid-row"
                 style={{ transform: `translateY(${row.start}px)`, gridTemplateColumns: `repeat(${columns}, minmax(0,1fr))` }}>
                 {result.items.slice(row.index * columns, (row.index + 1) * columns).map(asset => <div role="button" tabIndex={0}
-                  aria-label={`${groupedResources ? '模型分组' : '素材'} ${asset.name}`} key={asset.id} className={`asset-card ${selected?.id === asset.id ? 'selected' : ''} ${checked.includes(asset.id) ? 'checked' : ''}`}
+                  aria-label={`${asset.motion_package ? '动作包' : groupedResources ? '模型分组' : '素材'} ${asset.name}`} title={asset.motion_package ? asset.path : undefined} key={asset.id} className={`asset-card ${selected?.id === asset.id ? 'selected' : ''} ${checked.includes(asset.id) ? 'checked' : ''}`}
                   onClick={e => {
                     if (motionClick.current) clearTimeout(motionClick.current);
-                    if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); }
+                    if (asset.motion_package) enterMotionPackage(asset);
+                    else if (multiMode || e.metaKey || e.ctrlKey || e.shiftKey) { setMultiMode(true); selectAsset(asset, e.shiftKey); }
                     else if (groupedResources) enterModelGroup(asset);
                     else if (asset.kind === 'motion' && !selected) {
                       // Let a double click finish before the inspector reflows this card.
                       motionClick.current = setTimeout(() => openAsset(asset), 220);
                     } else openAsset(asset);
                   }}
-                  onDoubleClick={() => { if (motionClick.current) clearTimeout(motionClick.current); if (!multiMode && !groupedResources) { openAsset(asset); setPreview(true); } }}
-                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (multiMode) selectAsset(asset, e.shiftKey); else if (groupedResources) enterModelGroup(asset); else openAsset(asset); } }}>
+                  onDoubleClick={() => { if (motionClick.current) clearTimeout(motionClick.current); if (!asset.motion_package && !multiMode && !groupedResources) { openAsset(asset); setPreview(true); } }}
+                  onKeyDown={e => { if (e.target === e.currentTarget && e.key === 'Enter') { if (asset.motion_package) enterMotionPackage(asset); else if (multiMode) selectAsset(asset, e.shiftKey); else if (groupedResources) enterModelGroup(asset); else openAsset(asset); } }}>
                   <div className="asset-image" style={{ height: cellSize }}>
-                    {asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : asset.kind === 'motion' ? <Activity size={35}/> : asset.kind === 'model' ? <Box size={35}/> : <ImageIcon size={35}/>}
-                    <span className="format-badge">{asset.ext}</span>
+                    {asset.motion_package ? <Folder size={35}/> : asset.thumbnail ? <img src={imageUrl(asset)} alt={asset.name} loading="lazy"/> : asset.kind === 'motion' ? <Activity size={35}/> : asset.kind === 'model' ? <Box size={35}/> : <ImageIcon size={35}/>}
+                    <span className="format-badge">{asset.motion_package ? '动作包' : asset.ext}</span>
+                    {asset.motion_package && <span className="copy-badge">{asset.motion_package.count} 个动作文件</span>}
                     {groupedResources && asset.status === 'ready' && (asset.copy_count || 0) < 2 && <span className="copy-badge">模型 + {asset.resource_count || 0} 张外置贴图</span>}
                     {multiMode && <input className="selection-check" type="checkbox" aria-label={`选择 ${asset.name}`} checked={checked.includes(asset.id)}
                       onClick={e => e.stopPropagation()} onChange={() => selectAsset(asset)}/>}
                     {(asset.copy_count || 0) > 1 && <span className="copy-badge">{asset.copy_count} 份相同文件</span>}
-                    <button title={asset.favorite ? '取消收藏' : '收藏素材'} className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`}
-                      onClick={e => { e.stopPropagation(); run(() => patch(asset, { favorite: !asset.favorite })); }}><Heart size={15} fill={asset.favorite ? 'currentColor' : 'none'}/></button>
+                    {!asset.motion_package && <button title={asset.favorite ? '取消收藏' : '收藏素材'} className={`favorite-button ${asset.favorite ? 'is-favorite' : ''}`}
+                      onClick={e => { e.stopPropagation(); run(() => patch(asset, { favorite: !asset.favorite })); }}><Heart size={15} fill={asset.favorite ? 'currentColor' : 'none'}/></button>}
                     {query.text && strategy !== 'semantic' && asset.match_kind && <span className={`match-badge ${asset.keyword_fields?.length ? 'keyword' : ''}`}
                       title={asset.keyword_fields?.join('、') || '按画面语义相似度召回'}>
                       {asset.keyword_fields?.length ? `${asset.keyword_fields[0]}匹配` : '语义候选'}</span>}
                     {asset.score !== undefined && (!query.text || strategy === 'semantic') && <span className="score-badge">{asset.score.toFixed(3)}</span>}
-                    {asset.status !== 'ready' && <span className={`asset-state ${asset.status}`} title={asset.error || ''}>{labels[asset.status]}</span>}
+                    {!asset.motion_package && asset.status !== 'ready' && <span className={`asset-state ${asset.status}`} title={asset.error || ''}>{labels[asset.status]}</span>}
+                    {!!asset.motion_package?.errors && <span className="asset-state error">{asset.motion_package.errors} 个文件索引失败</span>}
                   </div>
-                  <div className="asset-caption"><strong>{asset.name}</strong><span>{asset.kind === 'motion' ? `${motionLabel(asset)} · ${motionTime(asset.motion?.duration || 0)}` : asset.kind === 'material' ? `PBR · ${Object.keys(asset.material?.config.maps || {}).length} 通道` : groupedResources ? `${asset.ext.toUpperCase()} · ${asset.model ? `${asset.model.materials.length} 材质` : labels[asset.status] || '准备中'}` : asset.kind === 'model' ? `模型主文件${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开资产组' : bytes(asset.size)}</span></div>
+                  <div className="asset-caption"><strong>{asset.name}</strong><span>{asset.motion_package ? Object.entries(asset.motion_package.types).map(([kind, count]) => `${({ body: '身体', facial: '表情', camera: '镜头', other: '其他' } as Record<string, string>)[kind]}${count > 1 ? ` ${count}` : ''}`).join(' · ') : asset.kind === 'motion' ? `${motionLabel(asset)} · ${motionTime(asset.motion?.duration || 0)}` : asset.kind === 'material' ? `PBR · ${Object.keys(asset.material?.config.maps || {}).length} 通道` : groupedResources ? `${asset.ext.toUpperCase()} · ${asset.model ? `${asset.model.materials.length} 材质` : labels[asset.status] || '准备中'}` : asset.kind === 'model' ? `模型主文件${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{asset.motion_package ? '打开动作包' : groupedResources ? '打开资产组' : bytes(asset.size)}</span></div>
                 </div>)}
               </div>)}
             </div>

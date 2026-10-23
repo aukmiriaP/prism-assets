@@ -2,6 +2,7 @@ export type SearchStrategy = 'hybrid' | 'keyword' | 'semantic';
 export type Asset = {
   kind: 'image' | 'model' | 'material' | 'motion'; model: ModelInfo | null; material: MaterialInfo | null;
   motion?: MotionInfo | null;
+  motion_package?: MotionPackage;
   owners?: { id: string; name: string; kind: string; relation: string }[];
   id: string; folder_id: string; path: string; name: string; ext: string;
   size: number; width: number; height: number; mtime: number; thumbnail: string | null;
@@ -28,7 +29,7 @@ export type Collection = { id: string; name: string; count: number; parent_id: s
 export type Job = { id: string; folder_id: string; name: string; status: string; total: number;
   done: number; failed: number; error: string | null; created: number };
 export type Summary = { total: number; favorites: number; counts: Record<string, number>;
-  models: number; materials: number; motions: number; components: number; independent_images: number; blender_available: boolean;
+  models: number; materials: number; motions: number; motion_packages: number; components: number; independent_images: number; blender_available: boolean;
   recovery?: { action: string; count: number }[];
   folders: Folder[]; tags: { name: string; count: number }[]; model: string;
   model_error: string | null; data_dir: string; jobs: Job[]; collections: Collection[] };
@@ -36,6 +37,7 @@ export type Result = { items: Asset[]; total: number; scope_total?: number; uniq
   collapsed_count?: number; top_k?: number; resource_total?: number; strategy?: SearchStrategy;
   keyword_total?: number; returned_keyword?: number; warning?: string; semantic_available?: boolean };
 export type Connection = { base: string; token: string };
+export type MotionPackage = { name: string; path: string; count: number; types: Record<string, number>; duration: number; errors: number };
 export type MotionInfo = { type: 'body' | 'facial' | 'camera' | 'other'; fps: number; frames: number; duration: number;
   bones: number; active_bones: string[]; bone_keys: number; morph_keys: number; camera_keys: number;
   ik_keys: number; warnings: string[]; target: string };

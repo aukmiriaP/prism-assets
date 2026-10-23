@@ -43,7 +43,27 @@ async function launch() {
     await page.evaluate(async source => window.prism.api('/folders', 'POST', { path: source }), path.join(root, '../datasets/motion'));
     await expect.poll(async () => page.evaluate(async () => (await window.prism.api('/summary')).motions), { timeout: 60000 }).toBe(3);
     await page.getByRole('button', { name: /^动作\s*\d/ }).click();
+    await expect(page.locator('.asset-card')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: '动作包 EX_HAPPY', exact: true })).toContainText('3 个动作文件');
+    await expect(page.getByRole('button', { name: /^动作\s*1$/ })).toBeVisible();
+    await shot('prism-motion-packages.png');
+    await page.getByRole('textbox', { name: '语义搜索' }).fill('EX_HAPPY');
+    await page.getByRole('textbox', { name: '语义搜索' }).press('Enter');
+    await expect(page.locator('.asset-card')).toHaveCount(1);
+    await page.getByRole('button', { name: '动作包 EX_HAPPY', exact: true }).click();
     await expect(page.locator('.asset-card')).toHaveCount(3);
+    await expect(page.getByLabel('当前位置')).toContainText('动作');
+    await expect(page.locator('.library-heading h1')).toContainText('EX_HAPPY');
+    await page.getByRole('button', { name: '返回', exact: true }).click();
+    await expect(page.getByRole('button', { name: '动作包 EX_HAPPY', exact: true })).toBeVisible();
+    await expect(page.getByRole('textbox', { name: '语义搜索' })).toHaveValue('EX_HAPPY');
+    await page.getByRole('button', { name: '前进', exact: true }).click();
+    await expect(page.locator('.asset-card')).toHaveCount(3);
+    await page.getByRole('button', { name: '返回动作包', exact: true }).click();
+    await page.getByRole('button', { name: '动作包 EX_HAPPY', exact: true }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.asset-card')).toHaveCount(3);
+    await shot('prism-motion-package-files.png');
     await page.getByRole('button', { name: '素材 motion.vmd', exact: true }).dblclick();
     await ready();
     await expect(viewer().locator('.motion-stage-label')).toContainText('50 / 50');
@@ -113,7 +133,7 @@ async function launch() {
     await page.getByRole('textbox', { name: '语义搜索' }).press('Enter');
     await expect(page.locator('.asset-card')).toHaveCount(1);
     expect(errors).toEqual([]);
-    console.log('MOTION_UI_OK: real skinned PMX, 3 characters, playback/step/loop/rate, facial/camera/audio/docs, themes/minimum size, cleanup; artifacts', output);
+    console.log('MOTION_UI_OK: automatic package grouping/count/search/navigation/keyboard, real skinned PMX, 3 characters, playback/step/loop/rate, facial/camera/audio/docs, themes/minimum size, cleanup; artifacts', output);
   } catch (error) {
     if (page && !page.isClosed()) {
       await shot('prism-motion-failure.png').catch(() => {});

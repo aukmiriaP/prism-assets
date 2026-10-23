@@ -135,6 +135,7 @@ class Filters(BaseModel):
     folder_id: str = ""
     collection_id: str = ""
     model_id: str = ""
+    motion_package: str = Field(default="", max_length=8192)
     include_model: bool = False
     relation: Literal["", "bound", "auxiliary"] = ""
     status: str = ""
@@ -164,6 +165,16 @@ def retry_assets(body: RetryRequest):
 @app.post("/assets/list")
 def assets(body: Filters):
     return app.state.catalog.list_assets(body.model_dump())
+
+
+class MotionPackagesRequest(BaseModel):
+    filters: Filters = Field(default_factory=Filters)
+    text: str = Field(default="", max_length=4000)
+
+
+@app.post("/assets/motion-packages")
+def motion_packages(body: MotionPackagesRequest):
+    return app.state.catalog.motion_packages(body.filters.model_dump(), body.text)
 
 
 @app.post("/assets/resource-groups")

@@ -5,11 +5,55 @@ from pathlib import Path
 
 from motion_assets import read_vmd
 from model_assets import resolve_reference
+from search_matching import KeywordMatcher
 
 AUDIO = {".wav": "audio/wav", ".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".m4a": "audio/mp4"}
+MOTION_DIRECTORY_SQL = "substr(a.path,1,length(a.path)-length(a.name)-1)"
 
 
 class MotionCatalog:
+    def motion_packages(self, filters, text=""):
+        """Group indexed VMD siblings by full directory, before pagination or deduplication."""
+        clauses, params = self.asset_filters({**filters, "kind": "motion", "name": ""})
+        rows = self.rows("SELECT a.* FROM assets a WHERE " + " AND ".join(clauses), params)
+        groups = {}
+        for row in rows:
+            groups.setdefault(str(Path(row["path"]).parent), []).append(row)
+        matcher = KeywordMatcher(text) if text.strip() else None
+        items = []
+        for directory, members in groups.items():
+            name = Path(directory).name
+            if filters.get("name") and not any(filters["name"].casefold() in value.casefold()
+                                               for value in [name, *(r["name"] for r in members)]):
+                continue
+            if matcher and not any(matcher.match([
+                ("动作包", name, 60), ("目录", directory, 20), ("文件名", row["name"], 50),
+                *(("标签", tag, 45) for tag in json.loads(row["tags"])),
+            ])[0] for row in members):
+                continue
+            types, duration = {}, 0
+            for row in members:
+                info = json.loads(row["motion_data"] or "{}") if row["status"] == "ready" else {}
+                kind = info.get("type", "other")
+                types[kind] = types.get(kind, 0) + 1
+                duration = max(duration, info.get("duration", 0))
+            types = {kind: types[kind] for kind in ("body", "facial", "camera", "other") if kind in types}
+            # Package cards are navigation records; source files keep their original IDs/metadata.
+            item = self.public(members[0])
+            item.update(id="motion-package-" + hashlib.sha256(directory.encode()).hexdigest()[:24],
+                        name=name, path=directory, added=max(r["added"] for r in members),
+                        thumbnail=None, favorite=False, tags=[], size=sum(r["size"] for r in members))
+            item["motion_package"] = dict(path=directory, name=name, count=len(members),
+                                           types=types, duration=duration,
+                                           errors=sum(r["status"] == "error" for r in members))
+            items.append(item)
+        order = filters.get("sort", "newest")
+        items.sort(key=(lambda a: (a["name"].casefold(), a["path"])) if order == "name"
+                   else lambda a: (a["added"], a["path"]), reverse=order == "newest")
+        offset, limit = max(0, filters.get("offset", 0)), min(1000, max(1, filters.get("limit", 200)))
+        return dict(items=items[offset:offset + limit], total=len(items),
+                    scope_total=sum(a["motion_package"]["count"] for a in items), offset=offset, limit=limit)
+
     def index_motion(self, aid, path, mtime, size):
         info = read_vmd(path)["info"]
         stat = path.stat()

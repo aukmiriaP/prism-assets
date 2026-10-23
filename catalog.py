@@ -19,7 +19,7 @@ from PIL import Image, ImageOps
 from model_assets import MODEL_EXTENSIONS, IMAGE_EXTENSIONS, dependency_stamp, prepare_model, blender_executable
 from search_matching import KeywordMatcher
 from material_catalog import MaterialCatalog
-from motion_catalog import MotionCatalog
+from motion_catalog import MotionCatalog, MOTION_DIRECTORY_SQL
 from motion_assets import MOTION_EXTENSIONS, MOTION_PROFILE
 
 EXTENSIONS = IMAGE_EXTENSIONS | MODEL_EXTENSIONS | MOTION_EXTENSIONS
@@ -743,6 +743,10 @@ class Catalog(MotionCatalog, MaterialCatalog):
 
     def asset_filters(self, filters):
         clauses, params = ["a.excluded=0", "a.archived=0"], []
+        if filters.get("motion_package"):
+            # Exact indexed parent only; descendants and same-named folders are separate packages.
+            clauses.append("a.kind='motion' AND " + MOTION_DIRECTORY_SQL + "=?")
+            params.append(filters["motion_package"])
         if filters.get("kind") in ("image", "model", "material", "motion"):
             clauses.append("a.kind=?")
             params.append(filters["kind"])
@@ -1113,6 +1117,7 @@ class Catalog(MotionCatalog, MaterialCatalog):
                 "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "materials": self.rows("SELECT count(*) n FROM assets WHERE kind='material' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "motions": self.rows("SELECT count(*) n FROM assets WHERE kind='motion' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
+                "motion_packages": self.rows("SELECT count(DISTINCT " + MOTION_DIRECTORY_SQL + ") n FROM assets a WHERE kind='motion' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.archived=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
                 "independent_images": self.rows("""SELECT count(*) n FROM assets a WHERE a.kind='image'
                     AND a.excluded=0 AND a.archived=0 AND a.status!='missing' AND NOT """ + self.owned_sql())[0]["n"],

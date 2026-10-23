@@ -108,6 +108,32 @@ def main():
             settle(c)
             assert c.get_asset(aid)["motion"]["bone_keys"] == 9539
             assert c.get_asset(aid)["favorite"]
+            # Package identity is its full directory, including when identical files/names repeat.
+            package = c.motion_packages({})["items"][0]["motion_package"]
+            assert package["name"] == "source" and package["count"] == 2
+            assert c.summary()["motion_packages"] == 1
+            duplicate = source / "another" / "source"
+            duplicate.mkdir(parents=True)
+            shutil.copyfile(samples / "motion.vmd", duplicate / "motion.vmd")
+            c.rescan(folder["id"]); settle(c)
+            packages = c.motion_packages({"limit": 1})
+            assert packages["total"] == 2 and len(packages["items"]) == 1
+            both = c.motion_packages({"sort": "name"})["items"]
+            assert both[0]["name"] == both[1]["name"] == "source"
+            assert both[0]["id"] != both[1]["id"]
+            assert c.summary()["motion_packages"] == 2
+            assert c.motion_packages({}, "motion")["total"] == 2
+            assert c.motion_packages({}, "facial")["total"] == 1
+            assert c.motion_packages({"name": "source"})["total"] == 2
+            assert c.list_assets({"motion_package": str(duplicate.resolve())})["total"] == 1
+            assert c.text_assets("facial", {"motion_package": str(duplicate.resolve())}, strategy="keyword")["total"] == 0
+            assert c.list_assets({"motion_package": str(root / "outside")})["total"] == 0
+            app_server.app.state.catalog = c
+            assert client.post("/assets/motion-packages", json={}).status_code == 401
+            assert client.post("/assets/motion-packages", headers=auth, json={"text": "facial"}).json()["total"] == 1
+            c.folder_exclusions(folder["id"], ["another"]); settle(c)
+            assert c.motion_packages({})["total"] == 1
+            assert c.summary()["motion_packages"] == 1
         finally:
             c.close()
     assert all(hashlib.sha256(p.read_bytes()).hexdigest() == digest for p, digest in originals.items())
