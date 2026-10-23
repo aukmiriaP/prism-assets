@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageOps
 from model_assets import MODEL_EXTENSIONS, IMAGE_EXTENSIONS, dependency_stamp, prepare_model, blender_executable
 from search_matching import KeywordMatcher
+from material_catalog import MaterialCatalog
 
 EXTENSIONS = IMAGE_EXTENSIONS | MODEL_EXTENSIONS
 PROFILE = "embeddinggemma2:1a4ffddb7905d3f63486748deabe091a01fb6201:mlx0.7.9:768:exif-rgb-2048:v1"
@@ -67,7 +68,7 @@ class Inference:
                 self.queue.task_done()
 
 
-class Catalog:
+class Catalog(MaterialCatalog):
     def __init__(self, root: Path, inference=None, watch=True):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -75,6 +76,7 @@ class Catalog:
         self.thumbs.mkdir(exist_ok=True)
         self.models = self.root / "models"
         self.models.mkdir(exist_ok=True)
+        self.init_materials()
         self.db = sqlite3.connect(self.root / "catalog.sqlite3", check_same_thread=False)
         self.db.row_factory = sqlite3.Row
         self.lock = threading.RLock()
@@ -119,6 +121,7 @@ class Catalog:
             ("assets", "excluded", "INTEGER NOT NULL DEFAULT 0"),
             ("assets", "kind", "TEXT NOT NULL DEFAULT 'image'"),
             ("assets", "model_data", "TEXT"),
+            ("assets", "material_data", "TEXT"),
             ("assets", "dependency_stamp", "TEXT"),
             ("assets", "archived", "INTEGER NOT NULL DEFAULT 0"),
             ("assets", "replacements", "TEXT NOT NULL DEFAULT '[]'"),
@@ -223,6 +226,7 @@ class Catalog:
                 if row["thumbnail"]:
                     (self.thumbs / row["thumbnail"]).unlink(missing_ok=True)
                 shutil.rmtree(self.models / row["id"], ignore_errors=True)
+                shutil.rmtree(self.materials / row["id"], ignore_errors=True)
 
     @staticmethod
     def excluded_path(path, base, rules):
@@ -288,8 +292,8 @@ class Catalog:
             raise ValueError("无法读取文件夹，请检查访问权限或磁盘连接") from exc
 
     def reconcile_exclusions(self, fid, rules, base):
-        changes = [(int(self.excluded_path(a["path"], base, rules)), a["id"])
-                   for a in self.rows("SELECT id,path FROM assets WHERE folder_id=?", (fid,))]
+        changes = [(int(self.excluded_path(Path(a["path"]) / "_" if a["kind"] == "material" else a["path"], base, rules)), a["id"])
+                   for a in self.rows("SELECT id,path,kind FROM assets WHERE folder_id=?", (fid,))]
         self.db.executemany("UPDATE assets SET excluded=? WHERE id=?", changes)
 
     def folder_exclusions(self, fid, rules, preview=False):
@@ -299,8 +303,8 @@ class Catalog:
             if not folders:
                 raise ValueError("目录不存在")
             folder = folders[0]
-            assets = self.rows("SELECT path,excluded FROM assets WHERE folder_id=? AND archived=0", (fid,))
-            flags = [self.excluded_path(a["path"], folder["path"], rules) for a in assets]
+            assets = self.rows("SELECT path,kind,excluded FROM assets WHERE folder_id=? AND archived=0", (fid,))
+            flags = [self.excluded_path(Path(a["path"]) / "_" if a["kind"] == "material" else a["path"], folder["path"], rules) for a in assets]
             result = {"rules": rules, "excluded_files": sum(flags),
                       "newly_excluded": sum(flag and not a["excluded"] for a, flag in zip(assets, flags)),
                       "restored_files": sum(not flag and a["excluded"] for a, flag in zip(assets, flags)),
@@ -466,9 +470,10 @@ class Catalog:
             self.execute("UPDATE folders SET status='error' WHERE id=?", (fid,))
         else:
             for key, old in existing.items():
-                if not old["archived"] and key not in seen and not self.excluded_path(key, base, rules) and not self.excluded_path(key, base, current_rules):
+                if old["kind"] != "material" and not old["archived"] and key not in seen and not self.excluded_path(key, base, rules) and not self.excluded_path(key, base, current_rules):
                     self.execute("UPDATE assets SET status='missing',vector=NULL WHERE id=?", (old["id"],))
             self.execute("UPDATE folders SET status='online',scanned=? WHERE id=?", (time.time(), fid))
+        self.scan_materials(fid, base, current_rules, retry, pending)
         if automatic and not pending and not walk_errors:
             self.recover_missing(fid)
             self.refresh_model_groups(fid)
@@ -477,7 +482,7 @@ class Catalog:
         self.execute("UPDATE jobs SET total=? WHERE id=?", (len(pending), jid))
         failed = 0
         # Build parent cards before their dependent texture thumbnails.
-        pending.sort(key=lambda item: item[1].suffix.lower() not in MODEL_EXTENSIONS)
+        pending.sort(key=lambda item: item[1].is_file() and item[1].suffix.lower() not in MODEL_EXTENSIONS)
         for i, (aid, path, mtime, size) in enumerate(pending):
             if self.stopping.is_set():
                 return
@@ -499,6 +504,8 @@ class Catalog:
             (SELECT id FROM jobs ORDER BY created DESC LIMIT 100) AND status NOT IN ('queued','running')""")
 
     def index_one(self, aid, path, mtime, size):
+        if self.rows("SELECT kind FROM assets WHERE id=?", (aid,))[0]["kind"] == "material":
+            return self.index_material(aid)
         if path.suffix.lower() in MODEL_EXTENSIONS:
             return self.index_model(aid, path)
         if size > 100 * 1024**2:
@@ -598,6 +605,7 @@ class Catalog:
         item = dict(asset)
         item.pop("vector", None)
         item["model"] = json.loads(item.pop("model_data") or "null")
+        item["material"] = json.loads(item.pop("material_data", None) or "null")
         item["tags"] = json.loads(item["tags"])
         item["favorite"] = bool(item["favorite"])
         item["replacements"] = json.loads(item["replacements"])
@@ -702,7 +710,7 @@ class Catalog:
                 collection_paths = {c["id"]: c["path"] for c in self.collection_records()}
                 for collection in item["collections"]:
                     collection["path"] = collection_paths[collection["id"]]
-        item["owners"] = self.rows("""SELECT a.id,a.name,r.relation FROM model_resources r JOIN assets a ON a.id=r.model_id
+        item["owners"] = self.rows("""SELECT a.id,a.name,a.kind,r.relation FROM model_resources r JOIN assets a ON a.id=r.model_id
             WHERE r.path=? AND a.status!='missing' AND a.excluded=0 AND a.archived=0""", (item["path"],))
         if item["kind"] == "model":
             counts = self.rows("""SELECT count(*) resource_count,
@@ -725,7 +733,7 @@ class Catalog:
 
     def asset_filters(self, filters):
         clauses, params = ["a.excluded=0", "a.archived=0"], []
-        if filters.get("kind") in ("image", "model"):
+        if filters.get("kind") in ("image", "model", "material"):
             clauses.append("a.kind=?")
             params.append(filters["kind"])
         if filters.get("kind") == "texture":
@@ -774,7 +782,7 @@ class Catalog:
     def resource_groups(self, filters):
         clauses, params = self.asset_filters({**filters, "kind": "texture", "include_components": True})
         source = """FROM assets a JOIN model_resources r ON r.path=a.path JOIN assets parent ON parent.id=r.model_id
-            WHERE parent.excluded=0 AND parent.archived=0 AND parent.status!='missing' AND """ + " AND ".join(clauses)
+            WHERE parent.kind='model' AND parent.excluded=0 AND parent.archived=0 AND parent.status!='missing' AND """ + " AND ".join(clauses)
         rows = self.rows("""SELECT parent.id,count(*) count,
             sum(r.relation='bound') bound,sum(r.relation='auxiliary') auxiliary """
             + source + " GROUP BY parent.id ORDER BY parent.name COLLATE NOCASE,parent.id", params)
@@ -1093,6 +1101,7 @@ class Catalog:
         collections = self.collection_records(counts=True)
         return {"counts": counts, "total": sum(v for k, v in counts.items() if k != "missing"),
                 "models": self.rows("SELECT count(*) n FROM assets WHERE kind='model' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
+                "materials": self.rows("SELECT count(*) n FROM assets WHERE kind='material' AND excluded=0 AND archived=0 AND status!='missing'")[0]["n"],
                 "components": self.rows("SELECT count(*) n FROM assets a WHERE a.excluded=0 AND a.archived=0 AND a.status!='missing' AND " + self.owned_sql())[0]["n"],
                 "independent_images": self.rows("""SELECT count(*) n FROM assets a WHERE a.kind='image'
                     AND a.excluded=0 AND a.archived=0 AND a.status!='missing' AND NOT """ + self.owned_sql())[0]["n"],

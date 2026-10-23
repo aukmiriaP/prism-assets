@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -129,7 +129,7 @@ def remove_collection(cid: str):
 
 
 class Filters(BaseModel):
-    kind: Literal["", "image", "model", "texture"] = ""
+    kind: Literal["", "image", "model", "texture", "material"] = ""
     include_components: bool = False
     exclude_components: bool = False
     folder_id: str = ""
@@ -263,6 +263,52 @@ def update_asset(aid: str, body: Metadata):
     return app.state.catalog.update_asset(aid, body.model_dump(exclude_none=True))
 
 
+class MaterialRequest(BaseModel):
+    config: dict
+
+
+@app.post("/materials/inspect")
+def inspect_material(body: FolderRequest):
+    from material_assets import inspect_material
+    return inspect_material(body.path)
+
+
+@app.post("/materials/preview")
+def preview_material(body: MaterialRequest):
+    return app.state.catalog.preview_material(body.config)
+
+
+@app.get("/materials/previews/{preview_id}/{role}/preview")
+def material_editor_map(preview_id: str, role: str):
+    return FileResponse(app.state.catalog.material_preview_file(preview_id, role), media_type="image/png")
+
+
+@app.post("/materials")
+def add_material(body: MaterialRequest):
+    return app.state.catalog.save_material(body.config)
+
+
+@app.patch("/materials/{aid}")
+def edit_material(aid: str, body: MaterialRequest):
+    return app.state.catalog.save_material(body.config, aid)
+
+
+@app.delete("/materials/{aid}")
+def remove_material(aid: str):
+    app.state.catalog.remove_material(aid)
+    return {"ok": True}
+
+
+@app.get("/assets/{aid}/material/{role}/preview")
+def material_map(aid: str, role: str, v: str = Query(default="", max_length=32)):
+    return FileResponse(app.state.catalog.material_file(aid, role, v), media_type="image/png")
+
+
+@app.get("/assets/{aid}/material/export")
+def material_export(aid: str):
+    return Response(app.state.catalog.export_material(aid), media_type="application/zip")
+
+
 @app.get("/assets/{aid}/thumbnail")
 def thumbnail(aid: str):
     catalog = app.state.catalog
@@ -277,7 +323,10 @@ def thumbnail(aid: str):
 def preview(aid: str):
     catalog = app.state.catalog
     asset = catalog.get_asset(aid)
-    path = catalog.model_file(aid, "view-0.png") if asset["kind"] == "model" else asset["path"]
+    if asset["kind"] == "material":
+        path = catalog.thumbs / (asset["thumbnail"] or "not-ready")
+    else:
+        path = catalog.model_file(aid, "view-0.png") if asset["kind"] == "model" else asset["path"]
     return image_response(path)
 
 

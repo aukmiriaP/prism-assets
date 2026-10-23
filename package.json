@@ -15,6 +15,8 @@
     "test:governance": ".venv/bin/python tests/governance.py",
     "test:collections": ".venv/bin/python tests/collections.py",
     "test:models": ".venv/bin/python tests/models.py",
+    "test:materials": ".venv/bin/python tests/material_assets.py && .venv/bin/python tests/material_catalog.py",
+    "test:materials-ui": "node tests/materials-ui.cjs",
     "test:retry": ".venv/bin/python tests/retry.py",
     "test:retry-ui": "node tests/retry-ui.cjs",
     "test:exclusions-ui": "node tests/exclusions-ui.cjs",

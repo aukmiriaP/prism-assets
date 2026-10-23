@@ -1,7 +1,7 @@
 # Prism Assets · 棱镜素材库
 
 面向美术素材的本地桌面检索应用。关联文件夹后，用中英文描述或参考图片寻找素材，
-浏览原图与 3D 模型、整理标签、收藏与虚拟集合。索引与模型推理完全在本机运行。当前版本 0.3.1。
+浏览原图、3D 模型与 PBR 材质，整理标签、收藏与虚拟集合。索引与模型推理完全在本机运行。当前版本 0.3.1。
 
 ## 直接使用
 
@@ -142,7 +142,47 @@ Prism 中的索引、收藏、标签与集合成员关系，原文件保留。�
 Sphere/Toon 渲染、描边、物理与第三方特效。FBX 支持范围取决于本机 Blender 导入器
 （如不支持 ASCII FBX）；复杂专用着色器与部分 glTF 扩展可能无法转换或与源软件不同。
 缺失贴图会明确提示，仍尽可能显示几何外观；损坏文件独立报错，不中断其他素材索引。
-RAR/ZIP 压缩包需先解压。OBJ、Blend、动画控制和 Blender 插件留待后续扩展。
+模型 RAR/ZIP 压缩包需先解压。OBJ、Blend 与动画控制留待后续扩展；
+下方 PBR 工作流另提供 Blender 材质包导入插件。
+
+## PBR 材质工作流（开发版）
+
+左侧「PBR 材质 → 导入材质包」选择一个贴图文件夹。自动识别基础色、法线、
+粗糙度、金属度、AO、自发光与透明度；ORM/ARM/RMA 自动提出打包通道建议，
+Smoothness/Gloss 转为粗糙度。多个候选会提示人工选择，界面列出真实文件名和尺寸。
+可修改通道、R/G/B/A、反相及 OpenGL/DirectX 法线约定，并调整颜色、表面参数和 UV 重复。
+材质球、平面和立方体提供可旋转的 Three.js 标准 PBR 预览，使用本地生成的工作室环境光。
+标题与保存按钮固定，参数区域独立滚动，支持浅色/深色及最小窗口。
+
+保存后创建独立材质资产，后台 Blender 渲染 640 × 640 材质球封面，
+用封面生成图像向量，接入关键词/语义/相似检索、标签、收藏与集合。
+编辑保留材质 ID 和整理记录；源贴图变化只更新受影响材质，缺图、失败和目录失联明确显示。
+绑定贴图收纳在所属材质下；「独立图片」隐藏模型与材质的附属贴图，
+移除材质定义会释放贴图归属，原图保留。每个目录对应一个材质定义，原目录不写配置。
+
+详情中的「导出 Blender 材质包」通过系统保存对话框生成 ZIP。
+配套插件可由 `.venv/bin/python scripts/package-material-addon.py` 构建；
+默认产物为工作区的 `prism-blender-pbr-addon.zip`。
+在 Blender「偏好设置 → 插件 → 从磁盘安装」安装 ZIP，再用
+「文件 → 导入 → Prism PBR Material (.zip)」导入材质包。
+先选中有 UV 的网格；插件替换所选网格的活动材质槽，没有材质槽时新增，
+建立 Principled BSDF 节点并打包图片，可用 Blender 撤销恢复。
+导入包只读取 JSON 与 PNG，不执行包内脚本，不依赖原贴图路径。
+颜色和自发光按 sRGB 使用，其他按线性数据；DX 法线只转换一次。
+AO 保留为独立引擎数据节点，不擅自乘入 Blender 基础色。
+
+首版读取 8 位常见图片；一个包最多 256 张贴图、8 层目录。
+缓存和导出贴图最长边为 2048 px，保留原始分辨率文件。
+交互预览可直接使用；封面索引需要 Blender，未安装时可编辑材质并在安装后重试。
+这套功能覆盖标准 PBR，不还原任意引擎 Shader，也不直接输出 UE/Unity 原生材质。
+新版界面/服务在开发版生效，既有 0.3.1 安装包未重新打包。
+配置与接口细节见 [PBR_MATERIALS.md](PBR_MATERIALS.md)。
+
+工作区提供 `prism-pbr-material-samples.zip`，解压后分别导入其中的材质文件夹。
+真实 1K 样本来自 Poly Haven 的 [木地板](https://polyhaven.com/a/wood_planks)、
+[锈金属](https://polyhaven.com/a/rusty_metal_04)、
+[岩石](https://polyhaven.com/a/rock_boulder_dry)，许可为 CC0；
+每个目录的 `SOURCE.json` 保存原始下载链接和 SHA-256。样本不自动加入日常库。
 
 ## 当前范围
 
@@ -151,6 +191,7 @@ RAR/ZIP 压缩包需先解压。OBJ、Blend、动画控制和 Blender 插件留�
 | 系统 | Apple Silicon Mac，macOS 14+；实测 M5 / 16GB / macOS 26.6.2 |
 | 图片 | PNG、JPEG、WebP、TIFF、BMP、TGA、可由 Pillow 解码的 SPH/SPA；单文件 ≤100MB、≤4000万像素 |
 | 模型 | PMX、FBX、GLB、glTF；单模型文件 ≤512MB；每次后台转换限时 4 分钟 |
+| PBR 材质 | 贴图包导入、通道修订、球/平面/立方体预览、独立资产检索整理、Blender 材质包导出与配套插件 |
 | 检索 | 中文/英文、参考图片、库内素材查找相似；模型按渲染外观检索；Top-K、完全重复聚合 |
 | 整理 | 多选、批量标签与收藏、多级虚拟集合及改名/调整父集合、目录排除、文件名/格式/宽度筛选、名称/时间排序 |
 | 同步 | 文件监视 + 定期增量检查；启动时自动核对；失败任务可重试 |
@@ -172,7 +213,7 @@ RAR/ZIP 压缩包需先解压。OBJ、Blend、动画控制和 Blender 插件留�
 余弦排序，适合作为第一版；大规模素材库的内存、吞吐与交互性能尚未完成基准测试。
 分数表示向量相似程度，并非正确概率。
 
-Blender、UE、Unity 插件及 MCP 接入留在下一阶段，本版先完成独立应用。
+开发版提供 Blender PBR 材质导入插件；UE、Unity 插件及 MCP 接入留在后续阶段。
 
 ## 数据、备份与故障恢复
 
@@ -182,6 +223,8 @@ Blender、UE、Unity 插件及 MCP 接入留在下一阶段，本版先完成独
 - `catalog.sqlite3`：素材、向量、标签、收藏和任务。
 - `thumbnails/`：可重建的缩略图缓存。
 - `models/`：可重建的静态 GLB、渲染图、贴图副本和转换日志。
+- `materials/`：已发布的规范化 PBR 贴图、材质配置、球体渲染及日志。
+- `material-previews/`：可清理的交互缓存；保留上限 24 组 / 256 MB。
 - `service.log`：本次启动日志，不记录搜索正文。
 
 备份前退出应用，再复制整个 `library` 目录。应用数据与原素材分开存放；
@@ -231,6 +274,10 @@ npm run test:governance
 npm run test:collections
 npm run test:models
 npm run test:retry
+.venv/bin/python tests/material_assets.py
+# 先解压工作区材质样本；使用 Blender 和隔离库，重复测试采用控制向量
+.venv/bin/python tests/material_catalog.py
+node tests/materials-ui.cjs
 .venv/bin/python tests/recovery.py
 npm run build
 npm run test:retry-ui
@@ -277,6 +324,10 @@ PRISM_BUNDLE_MODEL=1 npm run package
 | `catalog.py` | 增量扫描、SQLite、缩略图、任务恢复、文件监视、向量排序 |
 | `model_assets.py`、`model_worker.py` | PMX 解析、资源关联、Blender 转换与双视角渲染 |
 | `src/model-viewer.tsx` | Three.js 交互预览、材质与贴图详情 |
+| `material_assets.py`、`material_catalog.py` | PBR 通道识别/转换、目录库集成、版本缓存与导出 |
+| `material_worker.py`、`blender_material.py` | Blender 材质球渲染与共用节点构建 |
+| `src/materials.tsx`、`src/materials.css` | PBR 导入/编辑、交互预览及详情 |
+| `blender_addon/prism_pbr/` | 安装后从 ZIP 应用材质的 Blender 插件入口 |
 | `embed.py` | 离线图文编码；`PRISM_MODEL_DIR` 可指定权重位置 |
 | `prism-service.spec` | Python/MLX 运行环境冻结配置 |
 | `tests/` | 真实 HTTP/模型/文件系统与 Electron 交互验证 |

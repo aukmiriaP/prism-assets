@@ -6,9 +6,10 @@ import { Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight,
   Folder, FolderOpen, FolderPlus, Grid2X2, HardDrive, Heart, Image as ImageIcon,
   ImagePlus, LoaderCircle, Maximize2, Palette, RefreshCw, Search, Settings2, SlidersHorizontal,
   Sparkles, Tag, Trash2, TriangleAlert, X } from 'lucide-react';
-import type { Asset, Collection, Connection, Folder as FolderType, Result, SearchStrategy, Summary } from './types';
+import type { Asset, Collection, Connection, Folder as FolderType, MaterialInspection, Result, SearchStrategy, Summary } from './types';
 import { CollectionEditor, CollectionTree, ExclusionEditor, orderedCollections } from './organization';
 import { ModelDetails, ModelViewer } from './model-viewer';
+import { MaterialDetails, MaterialEditor, MaterialViewer } from './materials';
 import { listLocation, useNavigation, type BrowseView } from './navigation';
 import { ViewResults } from './view-results';
 import { AppearanceSettings, useAppearance } from './appearance';
@@ -54,6 +55,7 @@ function App() {
   const [settingsPage, setSettingsPage] = useState<typeof settingsPages[number]['id']>('appearance');
   const [preview, setPreview] = useState(false);
   const [previewError, setPreviewError] = useState(false);
+  const [materialEditor, setMaterialEditor] = useState<{ inspection: MaterialInspection; asset?: Asset } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [cardSize, setCardSize] = useState(205);
   const [refresh, setRefresh] = useState(0);
@@ -93,7 +95,7 @@ function App() {
   const collectionOptions = orderedCollections(summary?.collections || []);
   const collectionAncestors = collection?.ancestor_ids?.map(id => summary?.collections.find(c => c.id === id)).filter((c): c is Collection => Boolean(c)) || [];
   const childCollections = summary?.collections.filter(c => c.parent_id === collection?.id) || [];
-  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || (scope.startsWith('collection:') ? '已删除集合' : '全部素材')));
+  const title = modelGroup?.name || (activeTag ? `# ${activeTag}` : collection?.name || folder?.name || ({ all: '全部素材', models: '3D 模型', textures: '3D 模型', materials: 'PBR 材质', images: '独立图片', favorites: '我的收藏', error: '索引失败', missing: '失联文件' }[scope] || (scope.startsWith('collection:') ? '已删除集合' : '全部素材')));
   const checkedAssets = result.items.filter(a => checked.includes(a.id));
   const checkedIds = [...new Set(checkedAssets.flatMap(a => a.member_ids || [a.id]))];
   const columns = Math.max(2, Math.floor((gridWidth - 48) / (cardSize + 14)));
@@ -176,7 +178,7 @@ function App() {
     const hasSearch = Boolean(view.query.text || view.query.image_path || view.query.asset_id);
     const models = view.scope === 'models' || view.scope === 'textures';
     const params = { ...view.filters, limit: hasSearch ? topK : view.limit, top_k: topK,
-      kind: models ? !view.modelGroup || view.resourceRelation === 'model' ? 'model' : '' : view.scope === 'images' ? 'image' : '',
+      kind: models ? !view.modelGroup || view.resourceRelation === 'model' ? 'model' : '' : view.scope === 'images' ? 'image' : view.scope === 'materials' ? 'material' : '',
       exclude_components: view.scope === 'images', include_components: Boolean(view.modelGroup),
       model_id: view.modelGroup?.id || '', relation: view.resourceRelation === 'model' ? '' : view.resourceRelation,
       include_model: Boolean(view.modelGroup) && (!view.resourceRelation || view.resourceRelation === 'model'),
@@ -282,6 +284,14 @@ function App() {
     const path = await window.prism.chooseImage();
     if (path) search({ image_path: path, label: path.split('/').pop() });
   });
+  const importMaterial = () => run(async () => {
+    const path = await window.prism.chooseMaterial();
+    if (path) setMaterialEditor({ inspection: await api<MaterialInspection>('/materials/inspect', 'POST', { path }) });
+  });
+  const editMaterial = (asset: Asset) => run(async () => {
+    setPreview(false);
+    setMaterialEditor({ asset, inspection: await api<MaterialInspection>('/materials/inspect', 'POST', { path: asset.path }) });
+  });
   const patch = async (asset: Asset, changes: Partial<Asset>) => {
     const value = await api<Asset>(`/assets/${asset.id}`, 'PATCH', changes);
     resultCache.current.clear();
@@ -299,7 +309,7 @@ function App() {
         ids: ids || [], refresh_models: refreshModels,
         filters: { ...filters, folder_id: folder?.id || '', collection_id: collection?.id || '',
           tag: activeTag, favorite: scope === 'favorites',
-          kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : '',
+          kind: inModels ? !modelGroup || resourceRelation === 'model' ? 'model' : '' : scope === 'images' ? 'image' : scope === 'materials' ? 'material' : '',
           include_components: Boolean(modelGroup), model_id: modelGroup?.id || '',
           relation: resourceRelation === 'model' ? '' : resourceRelation,
           include_model: Boolean(modelGroup) && (!resourceRelation || resourceRelation === 'model'),
@@ -397,9 +407,10 @@ function App() {
       <button className="add-folder" onClick={addFolder}><FolderPlus size={17}/> 关联素材文件夹 <span>＋</span></button>
       <div className="nav-label">素材库</div>
       <nav>
-        <button title={`${summary.total} 个文件，其中 ${summary.components} 张贴图收纳在模型下`} className={scope === 'all' && !activeTag ? 'active' : ''} onClick={() => chooseScope('all')}><Grid2X2 size={17}/>全部素材<span>{summary.total - summary.components}</span></button>
+        <button title={`${summary.total} 个资产与文件，其中 ${summary.components} 张贴图收纳在所属资产下`} className={scope === 'all' && !activeTag ? 'active' : ''} onClick={() => chooseScope('all')}><Grid2X2 size={17}/>全部素材<span>{summary.total - summary.components}</span></button>
         <button title="按模型分组，包含模型文件、材质和附属贴图" className={inModels ? 'active' : ''} onClick={() => modelGroup ? returnToModels() : chooseScope('models')}><Box size={17}/>3D 模型<span>{summary.models}</span></button>
-        <button title="独立图片文件数，不包含模型附属贴图" className={scope === 'images' ? 'active' : ''} onClick={() => chooseScope('images')}><ImageIcon size={17}/>独立图片<span>{summary.independent_images}</span></button>
+        <button className={scope === 'materials' ? 'active' : ''} onClick={() => chooseScope('materials')}><Palette size={17}/>PBR 材质<span>{summary.materials || 0}</span></button>
+        <button title="独立图片文件数，不包含资产附属贴图" className={scope === 'images' ? 'active' : ''} onClick={() => chooseScope('images')}><ImageIcon size={17}/>独立图片<span>{summary.independent_images}</span></button>
         <button className={scope === 'favorites' ? 'active' : ''} onClick={() => chooseScope('favorites')}><Heart size={17}/>我的收藏<span>{summary.favorites}</span></button>
       </nav>
       <div className="nav-label">关联目录<button title="添加目录" onClick={addFolder}><FolderPlus size={14}/></button></div>
@@ -455,7 +466,7 @@ function App() {
         {searching && result.warning && <p className="search-warning">{result.warning}</p>}
       </div>
       <div className="library-heading"><div><h1>{searching ? '搜索候选' : title}{(!busy || result.items.length > 0) && <span>{result.total.toLocaleString()} {groupedResources ? '组' : '项'}</span>}</h1></div>
-        <div className="view-controls"><label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
+        <div className="view-controls">{scope === 'materials' && <button onClick={importMaterial}><Palette size={14}/>导入材质包</button>}<label title="缩略图大小"><Grid2X2 size={15}/><input type="range" aria-label="缩略图大小" min="140" max="280" value={cardSize} onChange={e => setCardSize(+e.target.value)}/></label>
           <button className={multiMode ? 'selected-control' : ''} onClick={() => { setMultiMode(v => !v); setChecked([]); }}>{multiMode ? '退出多选' : '多选'}</button>
           {collection && <><button onClick={() => newCollection('navigation', collection.id)}><FolderPlus size={14}/>新建子集合</button>
             <button onClick={() => editCollection(collection)}>管理集合</button></>}
@@ -566,7 +577,7 @@ function App() {
                     {asset.score !== undefined && (!query.text || strategy === 'semantic') && <span className="score-badge">{asset.score.toFixed(3)}</span>}
                     {asset.status !== 'ready' && <span className={`asset-state ${asset.status}`} title={asset.error || ''}>{labels[asset.status]}</span>}
                   </div>
-                  <div className="asset-caption"><strong>{asset.name}</strong><span>{groupedResources ? `${asset.ext.toUpperCase()} · ${asset.model ? `${asset.model.materials.length} 材质` : labels[asset.status] || '准备中'}` : asset.kind === 'model' ? `模型主文件${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开资产组' : bytes(asset.size)}</span></div>
+                  <div className="asset-caption"><strong>{asset.name}</strong><span>{asset.kind === 'material' ? `PBR · ${Object.keys(asset.material?.config.maps || {}).length} 通道` : groupedResources ? `${asset.ext.toUpperCase()} · ${asset.model ? `${asset.model.materials.length} 材质` : labels[asset.status] || '准备中'}` : asset.kind === 'model' ? `模型主文件${asset.model ? ` · ${asset.model.materials.length} 材质` : ''}` : asset.width ? `${asset.width} × ${asset.height}` : '读取中'}<i>·</i>{groupedResources ? '打开资产组' : bytes(asset.size)}</span></div>
                 </div>)}
               </div>)}
             </div>
@@ -575,7 +586,7 @@ function App() {
         </main>
         {selected && <aside className="inspector">
           <div className="inspector-top"><span>素材详情</span><button title="关闭详情" onClick={() => setSelected(null)}><X size={17}/></button></div>
-          <button className="inspector-preview" onClick={() => setPreview(true)}>{selected.thumbnail ? <img src={imageUrl(selected)} alt="选中素材预览"/> : <ImageIcon size={40}/>}<span><Maximize2 size={14}/> {selected.kind === 'model' ? '旋转查看 3D' : '大图预览'}</span></button>
+          <button className="inspector-preview" onClick={() => setPreview(true)}>{selected.thumbnail ? <img src={imageUrl(selected)} alt="选中素材预览"/> : <ImageIcon size={40}/>}<span><Maximize2 size={14}/> {selected.kind === 'material' ? '旋转查看材质' : selected.kind === 'model' ? '旋转查看 3D' : '大图预览'}</span></button>
           <h2>{selected.name}</h2><div className="detail-status"><i className={selected.status}/> {labels[selected.status]}</div>
           {selected.error && <p className="asset-error">{selected.error}</p>}
           {selected.status === 'missing' && <div className="detail-section"><h3>恢复文件关联</h3>
@@ -592,9 +603,11 @@ function App() {
             disabled={selected.status !== 'ready' || retryBusy || summary.jobs.some(j => j.folder_id === selected.folder_id && ['queued', 'running'].includes(j.status))}
             onClick={() => retry([selected.id], true)}><RefreshCw size={13}/>重新生成预览</button>}
           {selected.kind === 'model' && <ModelDetails asset={selected} connection={connection}/>}
+          {selected.kind === 'material' && <MaterialDetails asset={selected} edit={() => editMaterial(selected)}
+            exported={() => notify('已导出 Blender 材质包')} removed={() => { setSelected(null); setPreview(false); resultCache.current.clear(); loadSummary(); setRefresh(n => n + 1); notify('已移除材质，原始贴图保留'); }}/>}
           {selected.kind === 'model' && !modelGroup && <button className="text-action" onClick={() => enterModelGroup(selected)}>打开模型资产组</button>}
-          {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属模型</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
-          <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>
+          {Boolean(selected.owners?.length) && <div className="detail-section"><h3>所属资产</h3><div className="owner-links">{selected.owners?.map(owner => <button className="text-action" key={owner.id} onClick={() => run(async () => openAsset(await api<Asset>(`/assets/${owner.id}`)))}>{owner.name} · {owner.relation === 'bound' ? '材质引用' : '同目录辅助'}</button>)}</div></div>}
+          <div className="detail-section"><h3>文件信息</h3><dl><dt>{selected.kind === 'material' ? '贴图通道' : selected.kind === 'model' ? '顶点' : '尺寸'}</dt><dd>{selected.kind === 'material' ? Object.keys(selected.material?.config.maps || {}).length : selected.kind === 'model' ? selected.model?.vertices.toLocaleString() || '—' : `${selected.width} × ${selected.height}`}</dd><dt>格式</dt><dd>{selected.kind === 'material' ? 'PBR 材质包' : selected.ext.toUpperCase()}</dd><dt>文件大小</dt><dd>{bytes(selected.size)}</dd><dt>导入时间</dt><dd>{new Date(selected.added * 1000).toLocaleDateString('zh-CN')}</dd></dl></div>
           <div className="detail-section"><h3>文件副本</h3>
             <p className="organization-description">详情中的标签和收藏只修改当前文件。批量整理可处理选中项的全部副本。</p>
             <button className="text-action" onClick={() => run(async () => { const data = await api<{ items: Asset[] }>(`/assets/${selected.id}/copies`); setCopies(data.items); })}>查看全部未排除副本</button>
@@ -670,7 +683,7 @@ function App() {
           </>}
           {settingsPage === 'help' && <>
             <div className="settings-page-heading"><h3>帮助与关于</h3><p>版本、运行环境与支持范围。</p></div>
-            <div className="settings-info"><HardDrive size={22}/><div><strong>Prism Assets 0.3.1 · Apple Silicon</strong><p>图文检索与索引完全本地运行。支持静态图片与 TGA，以及 PMX、FBX、GLB、glTF 模型。</p><p>模型预览需安装 Blender：{summary.blender_available ? '已检测到' : '未检测到，请安装到“应用程序”后重试索引'}。</p></div></div>
+            <div className="settings-info"><HardDrive size={22}/><div><strong>Prism Assets 0.3.1 · Apple Silicon</strong><p>图文检索与索引完全本地运行。支持图片、PMX、FBX、GLB、glTF 模型与 PBR 材质包。</p><p>模型预览和材质球封面需安装 Blender：{summary.blender_available ? '已检测到' : '未检测到，请安装到“应用程序”后重试索引'}。材质编辑中的交互预览可直接使用。</p></div></div>
             <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型的两张外观预览图，不判断拓扑或动作。PMX 展示基础材质，MMD 特效不完整还原；当前不播放动画。图片限制 100 MB / 4000 万像素，模型限制 512 MB。暂不解析视频与 PSD。</p></div>
           </>}
         </div>
@@ -687,7 +700,11 @@ function App() {
       }}/>}
     {exclusionEditor && <ExclusionEditor folder={exclusionEditor} close={() => setExclusionEditor(null)}
       saved={async () => { await loadSummary(); setRefresh(n => n + 1); setChecked([]); setSelected(null); }}/>}
-    {preview && selected && (selected.kind === 'model' ? <ModelViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : <div className="lightbox" role="dialog" aria-label="大图预览" onClick={() => setPreview(false)}><button title="关闭预览" onClick={() => setPreview(false)}><X size={23}/></button>{previewError ? <p>原图无法读取，请检查文件是否移动或磁盘是否连接。</p> : <img src={imageUrl(selected, true)} alt={selected.name} onError={() => setPreviewError(true)} onClick={e => e.stopPropagation()}/>}<div>{selected.name}<span>{selected.width} × {selected.height} · ESC 关闭</span></div></div>)}
+    {materialEditor && <MaterialEditor {...materialEditor} connection={connection} close={() => setMaterialEditor(null)} saved={asset => {
+      setMaterialEditor(null); resultCache.current.clear(); browse({ scope: 'materials', selected: asset, modelGroup: null, activeTag: '', query: {}, draft: '' });
+      loadSummary(); setRefresh(n => n + 1); notify('材质已保存，正在生成封面与检索索引');
+    }}/>}
+    {preview && selected && (selected.kind === 'material' ? <MaterialViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : selected.kind === 'model' ? <ModelViewer asset={selected} connection={connection} close={() => setPreview(false)}/> : <div className="lightbox" role="dialog" aria-label="大图预览" onClick={() => setPreview(false)}><button title="关闭预览" onClick={() => setPreview(false)}><X size={23}/></button>{previewError ? <p>原图无法读取，请检查文件是否移动或磁盘是否连接。</p> : <img src={imageUrl(selected, true)} alt={selected.name} onError={() => setPreviewError(true)} onClick={e => e.stopPropagation()}/>}<div>{selected.name}<span>{selected.width} × {selected.height} · ESC 关闭</span></div></div>)}
     {dragging && <div className="drop-overlay" onDragLeave={() => setDragging(false)}><ImagePlus size={48}/><h2>放入参考图片，寻找相似素材</h2><p>图片仅在本机处理</p></div>}
     {notice && <div className="toast" role="status"><span>{notice}</span><button title="关闭提示" onClick={() => setNotice('')}><X size={15}/></button></div>}
   </div>;

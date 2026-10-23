@@ -100,7 +100,7 @@ handle('api', async (route, method = 'GET', body) => {
   if (!endpoint) throw new Error('本地服务已退出，请重新启动应用');
   const directoryRead = method === 'GET' && typeof route === 'string' &&
     /^\/folders\/[a-zA-Z0-9_-]+\/directories\?parent=(?:[a-zA-Z0-9_.!~*'()-]|%[a-fA-F0-9]{2})*$/.test(route);
-  if (typeof route !== 'string' || (!directoryRead && !/^\/(summary|health|search|folders|assets|collections)(\/[a-zA-Z0-9_-]+)*$/.test(route))
+  if (typeof route !== 'string' || (!directoryRead && !/^\/(summary|health|search|folders|assets|collections|materials)(\/[a-zA-Z0-9_-]+)*$/.test(route))
     || !['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw new Error('无效请求');
   const response = await fetch(endpoint + route, {
     method, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
@@ -120,6 +120,37 @@ handle('choose-image', async () => {
   const result = await dialog.showOpenDialog(window, { properties: ['openFile'], title: '选择参考图片',
     filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp', 'tif', 'tiff', 'bmp'] }] });
   return result.canceled ? null : result.filePaths[0];
+});
+handle('choose-material', async () => {
+  const result = await dialog.showOpenDialog(window, { properties: ['openDirectory'],
+    title: '导入 PBR 材质包', buttonLabel: '选择贴图文件夹' });
+  return result.canceled ? null : result.filePaths[0];
+});
+handle('export-material', async aid => {
+  await ready;
+  if (!/^[a-f0-9]{32}$/.test(aid)) throw new Error('材质不存在');
+  const headers = { Authorization: `Bearer ${token}` };
+  const assetResponse = await fetch(`${endpoint}/assets/${aid}`, { headers });
+  if (!assetResponse.ok) throw new Error('材质不存在');
+  const asset = await assetResponse.json();
+  if (asset.kind !== 'material') throw new Error('请选择 PBR 材质');
+  const result = await dialog.showSaveDialog(window, { title: '导出 Blender 材质包',
+    defaultPath: `${asset.name.replace(/[\\/:\0]/g, '_')}.prism-pbr.zip`,
+    filters: [{ name: 'Prism PBR 材质包', extensions: ['zip'] }] });
+  if (result.canceled || !result.filePath) return null;
+  const response = await fetch(`${endpoint}/assets/${aid}/material/export`, { headers,
+    signal: AbortSignal.timeout(60000) });
+  if (!response.ok) {
+    const error = await response.json(); throw new Error(error.detail || '材质导出失败');
+  }
+  const buffer = Buffer.from(await response.arrayBuffer());
+  // A sibling temporary file prevents a failed write from replacing an existing export.
+  const temporary = `${result.filePath}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+  try {
+    await fs.promises.writeFile(temporary, buffer, { flag: 'wx' });
+    await fs.promises.rename(temporary, result.filePath);
+  } finally { await fs.promises.rm(temporary, { force: true }); }
+  return result.filePath;
 });
 handle('reveal', async value => { if (typeof value === 'string') shell.showItemInFolder(value); });
 handle('open-file', async aid => {

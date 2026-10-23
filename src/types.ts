@@ -1,7 +1,7 @@
 export type SearchStrategy = 'hybrid' | 'keyword' | 'semantic';
 export type Asset = {
-  kind: 'image' | 'model'; model: ModelInfo | null;
-  owners?: { id: string; name: string; relation: string }[];
+  kind: 'image' | 'model' | 'material'; model: ModelInfo | null; material: MaterialInfo | null;
+  owners?: { id: string; name: string; kind: string; relation: string }[];
   id: string; folder_id: string; path: string; name: string; ext: string;
   size: number; width: number; height: number; mtime: number; thumbnail: string | null;
   tags: string[]; favorite: boolean; status: string; error: string | null;
@@ -27,7 +27,7 @@ export type Collection = { id: string; name: string; count: number; parent_id: s
 export type Job = { id: string; folder_id: string; name: string; status: string; total: number;
   done: number; failed: number; error: string | null; created: number };
 export type Summary = { total: number; favorites: number; counts: Record<string, number>;
-  models: number; components: number; independent_images: number; blender_available: boolean;
+  models: number; materials: number; components: number; independent_images: number; blender_available: boolean;
   recovery?: { action: string; count: number }[];
   folders: Folder[]; tags: { name: string; count: number }[]; model: string;
   model_error: string | null; data_dir: string; jobs: Job[]; collections: Collection[] };
@@ -35,6 +35,18 @@ export type Result = { items: Asset[]; total: number; scope_total?: number; uniq
   collapsed_count?: number; top_k?: number; resource_total?: number; strategy?: SearchStrategy;
   keyword_total?: number; returned_keyword?: number; warning?: string; semantic_available?: boolean };
 export type Connection = { base: string; token: string };
+export type MaterialRole = 'base_color' | 'normal' | 'roughness' | 'metallic' | 'ao' | 'emissive' | 'opacity';
+export type MaterialBinding = { file: string; channel: string; invert: boolean };
+export type MaterialConfig = { version: number; source_dir: string; name: string;
+  maps: Partial<Record<MaterialRole, MaterialBinding>>; normal_format: 'opengl' | 'directx';
+  color: string; roughness: number; metallic: number; normal_strength: number;
+  emissive_strength: number; opacity: number; repeat: number };
+export type MaterialPreview = { preview_id?: string; cache?: string; config: MaterialConfig;
+  maps: Partial<Record<MaterialRole, MaterialBinding & { cache_file: string; color_space: string; width: number; height: number }>>;
+  warnings: string[] };
+export type MaterialInfo = { config: MaterialConfig; published?: MaterialPreview };
+export type MaterialInspection = { config: MaterialConfig;
+  files: { file: string; name: string; width: number; height: number; alpha: boolean }[]; warnings: string[] };
 declare global {
   interface Window {
     prism: {
@@ -42,6 +54,8 @@ declare global {
       api<T = unknown>(route: string, method?: string, body?: unknown): Promise<T>;
       chooseFolder(): Promise<string[]>;
       chooseImage(): Promise<string | null>;
+      chooseMaterial(): Promise<string | null>;
+      exportMaterial(id: string): Promise<string | null>;
       reveal(path: string): Promise<void>;
       openFile(id: string): Promise<void>;
       copy(text: string): Promise<void>;

@@ -79,27 +79,29 @@ async function capture(name) {
     await expect(page.getByLabel('隔离材质')).toHaveValue('');
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog', { name: '3D 模型预览' })).toHaveCount(0);
-    await page.getByRole('button', { name: /^3D 模型/ }).click();
     await card.click();
     await page.getByRole('button', { name: '查找相似', exact: true }).click();
     await expect(page.locator('.score-badge')).toHaveCount(3, { timeout: 30000 });
     await expect(page.locator('.asset-card').first()).toHaveAttribute('aria-label', '素材 鸣潮_锁暝1.0.pmx');
     await page.getByRole('button', { name: '退出搜索', exact: true }).click();
+    await page.getByLabel('文字搜索方式').selectOption('semantic');
     await page.getByRole('textbox', { name: '语义搜索' }).fill('黑色裙子，红色长发的女孩');
     await page.getByRole('textbox', { name: '语义搜索' }).press('Enter');
     await expect(page.locator('.score-badge')).toHaveCount(3, { timeout: 60000 });
     await expect(page.locator('.score-badge').first()).not.toHaveText('1.000', { timeout: 60000 });
     console.log('TEXT_CANDIDATES', await page.locator('.asset-card').evaluateAll(els => els.map(el => ({ name: el.getAttribute('aria-label'), score: el.querySelector('.score-badge')?.textContent }))));
     await page.getByRole('button', { name: '退出搜索', exact: true }).click();
-    await page.getByRole('button', { name: /^模型附属贴图/ }).click();
-    await expect(page.locator('.result-controls')).toContainText('126 个文件');
+    await page.getByRole('button', { name: /^3D 模型/ }).click();
+    await page.getByRole('button', { name: '模型分组 鸣潮_锁暝1.0.pmx', exact: true }).click();
+    await page.getByLabel('资源类型', { exact: true }).selectOption('bound');
+    await expect(page.locator('.result-controls')).toContainText('当前范围 22 个文件');
     await page.locator('.asset-card').first().click();
     await expect(page.locator('.owner-links')).toBeVisible();
     expect(errors).toEqual([]);
     console.log(JSON.stringify({ ok: true, temp, output, checks: [
       'three real PMXs / 126 textures / 129 real embeddings', 'three parent cards', 'material and resource bindings',
       'texture preview', 'GLB loading', 'actual drag changes render', 'wireframe and material isolation',
-      'reset and Escape', 'model similar search', 'Chinese text search', 'component owner navigation',
+      'reset and Escape', 'model similar search', 'Chinese text search', 'model group and bound-texture owner navigation',
       'zero renderer exceptions and external requests'] }, null, 2));
   } catch (e) {
     console.error(e); console.error({ errors, temp }); process.exitCode = 1;

@@ -4,6 +4,8 @@ contextBridge.exposeInMainWorld('prism', {
   api: (route, method, body) => ipcRenderer.invoke('api', route, method, body),
   chooseFolder: () => ipcRenderer.invoke('choose-folder'),
   chooseImage: () => ipcRenderer.invoke('choose-image'),
+  chooseMaterial: () => ipcRenderer.invoke('choose-material'),
+  exportMaterial: id => ipcRenderer.invoke('export-material', id),
   reveal: path => ipcRenderer.invoke('reveal', path),
   openFile: id => ipcRenderer.invoke('open-file', id),
   copy: text => ipcRenderer.invoke('copy', text),

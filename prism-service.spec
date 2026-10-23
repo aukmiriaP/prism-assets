@@ -1,7 +1,7 @@
 from PyInstaller.utils.hooks import collect_all, collect_data_files, collect_submodules, copy_metadata
 
 datas, binaries, hiddenimports = [], [], []
-datas += [('model_worker.py', '.')]
+datas += [('model_worker.py', '.'), ('material_worker.py', '.'), ('blender_material.py', '.')]
 for package in ['mlx', 'mlx_vlm', 'transformers']:
     datas += collect_data_files(package, include_py_files=True)
 hiddenimports += collect_submodules('mlx_vlm.models.embedding_gemma2')
