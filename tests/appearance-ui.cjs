@@ -39,6 +39,9 @@ metadata={"cache":"fixture","vertices":3,"triangles":1,"materials":[{"name":"示
 library.execute("""INSERT INTO assets(id,path,name,ext,size,mtime,hash,kind,model_data,status,added,updated)
  VALUES(?,?,?,?,?,?,?,'model',?,'ready',?,?)""",(aid,str(original),original.name,"glb",len(blob),
  original.stat().st_mtime_ns,aid,json.dumps(metadata),time.time(),time.time()))
+for n in range(12):
+    library.execute("INSERT INTO folders(id,path,name,status,scanned) VALUES(?,?,?,'offline',?)",
+        (f"{n+20:032x}",str(library.root/f"不存在的目录-{n+1}"),f"素材目录-{n+1}",time.time()))
 library.close(); library.worker.join(3); library.db.close()
 `, data], { cwd: root });
 const env = { ...process.env, PRISM_USER_DATA: path.join(temp, 'electron'), PRISM_DATA_DIR: data };
@@ -103,6 +106,9 @@ async function contrastCheck() {
     const selection = await page.locator('.inspector>h2').textContent();
     await page.evaluate(() => { window.__appearanceImage = document.querySelector('.inspector-preview img'); });
     await openSettings();
+    await expect(page.getByRole('tablist', { name: '设置分类' })).toHaveAttribute('aria-orientation', 'vertical');
+    await expect(page.getByRole('tab')).toHaveCount(4);
+    await expect(page.getByRole('tab', { name: '外观', exact: true })).toHaveAttribute('aria-selected', 'true');
     await instance.evaluate(() => { global.__appearanceRequests = []; });
     await expect(page.getByRole('button', { name: '浅色', exact: true })).toHaveAttribute('aria-pressed', 'true');
     await screenshot('appearance-light.png');
@@ -126,6 +132,40 @@ async function contrastCheck() {
         await contrastCheck();
       }
     }
+    for (const category of ['关联目录', '本地数据', '帮助与关于', '外观']) {
+      await page.getByRole('tab', { name: category, exact: true }).click();
+      await expect(page.getByRole('tabpanel')).toHaveCount(1);
+      await expect(page.getByRole('tabpanel', { name: category, exact: true })).toBeVisible();
+      if (category === '关联目录') {
+        await expect(page.locator('.folder-setting')).toHaveCount(12);
+        await expect(page.getByRole('button', { name: '排除子目录 素材目录-1', exact: true })).toBeVisible();
+      } else if (category === '本地数据') {
+        await expect(page.locator('.data-path')).toContainText(data);
+        await instance.evaluate(({ shell }) => {
+          global.__settingsOriginalReveal = shell.showItemInFolder;
+          shell.showItemInFolder = value => { global.__settingsReveal = value; };
+        });
+        await page.locator('.data-path').click();
+        await expect.poll(() => instance.evaluate(() => global.__settingsReveal)).toBe(fs.realpathSync(data));
+        await instance.evaluate(({ shell }) => { shell.showItemInFolder = global.__settingsOriginalReveal; });
+      } else if (category === '帮助与关于') {
+        await expect(page.locator('.settings-info')).toContainText('Blender');
+        await expect(page.locator('.help-note')).toContainText('不判断拓扑或动作');
+      } else {
+        await expect(page.getByLabel('自定义主题颜色')).toHaveValue('#4d8a83');
+      }
+      await screenshot(`settings-page-${category}.png`);
+    }
+    const appearanceTab = page.getByRole('tab', { name: '外观', exact: true });
+    await appearanceTab.focus(); await appearanceTab.press('ArrowDown');
+    await expect(page.getByRole('tab', { name: '关联目录', exact: true })).toBeFocused();
+    await page.keyboard.press('End');
+    await expect(page.getByRole('tab', { name: '帮助与关于', exact: true })).toBeFocused();
+    await page.keyboard.press('ArrowDown'); await expect(appearanceTab).toBeFocused();
+    await page.keyboard.press('ArrowUp');
+    await expect(page.getByRole('tab', { name: '帮助与关于', exact: true })).toBeFocused();
+    await page.keyboard.press('Home');
+    await expect(appearanceTab).toHaveAttribute('aria-selected', 'true');
     await expect(page.getByLabel('语义搜索')).toHaveValue('保留未提交的搜索');
     await expect(page.locator('.inspector>h2')).toHaveText(selection);
     const paths = await instance.evaluate(() => global.__appearanceRequests);
@@ -145,10 +185,11 @@ async function contrastCheck() {
     const scroller = page.locator('.settings-content');
     const heading = page.locator('.settings-modal>.panel-heading');
     const headingBounds = await heading.boundingBox();
-    expect(await scroller.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
+    const navigationY = (await page.locator('.settings-nav').boundingBox()).y;
     for (const mode of ['浅色', '深色']) {
-      await scroller.evaluate(el => { el.scrollTop = 0; });
       await page.getByRole('button', { name: mode, exact: true }).click();
+      await page.getByRole('tab', { name: '关联目录', exact: true }).click();
+      expect(await scroller.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
       for (const end of ['top', 'bottom']) {
         await scroller.evaluate((el, end) => { el.scrollTop = end === 'top' ? 0 : el.scrollHeight; }, end);
         const scrollBounds = await scroller.boundingBox();
@@ -156,11 +197,14 @@ async function contrastCheck() {
         expect(scrollBounds.x + scrollBounds.width).toBeLessThanOrEqual(bounds.x + bounds.width - 5);
         expect(scrollBounds.y + scrollBounds.height).toBeLessThanOrEqual(bounds.y + bounds.height - 5);
         expect((await heading.boundingBox()).y).toBe(headingBounds.y);
+        expect((await page.locator('.settings-nav').boundingBox()).y).toBe(navigationY);
         expect(await page.locator('.settings-modal').evaluate(el => el.scrollTop)).toBe(0);
         await expect(page.getByTitle('关闭设置', { exact: true })).toBeVisible();
-        if (end === 'bottom') await expect(page.locator('.settings-content .help-note')).toBeInViewport();
+        if (end === 'bottom') await expect(page.getByRole('button', { name: '关联文件夹', exact: true })).toBeInViewport();
         await screenshot(`settings-scroll-${mode === '浅色' ? 'light' : 'dark'}-${end}.png`);
       }
+      await page.getByRole('tab', { name: '外观', exact: true }).click();
+      expect(await scroller.evaluate(el => el.scrollTop)).toBe(0);
     }
     await closeSettings(); await openSettings();
     expect(await scroller.evaluate(el => el.scrollTop)).toBe(0);
@@ -200,7 +244,7 @@ async function contrastCheck() {
     await expect(page.locator('html')).toHaveAttribute('data-preview-background', 'solid');
     await expect(page.locator('.asset-card')).toHaveCount(4);
     expect(errors).toEqual([]);
-    console.log(`APPEARANCE_UI_OK: modes, all presets, custom color contrast, OS changes, background toggle and persistence, legacy/corrupt storage, collapsed help, narrow window, inset scroll bounds at both ends, fixed close button, retained selection/search, no catalog requests or image/3D canvas reload; screenshots ${output}`);
+    console.log(`APPEARANCE_UI_OK: four settings pages, keyboard navigation, reveal directory, modes/colors/background/persistence, legacy/corrupt storage, long folder list, narrow window, inset scroll bounds, fixed navigation/header, retained selection/search, no catalog requests or image/3D canvas reload; screenshots ${output}`);
   } finally {
     if (instance) await instance.close();
     if (output !== temp) fs.rmSync(temp, { recursive: true, force: true });

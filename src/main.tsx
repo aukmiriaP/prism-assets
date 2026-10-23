@@ -4,7 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight, CircleHelp, Copy,
   Folder, FolderOpen, FolderPlus, Grid2X2, HardDrive, Heart, Image as ImageIcon,
-  ImagePlus, LoaderCircle, Maximize2, RefreshCw, Search, Settings2, SlidersHorizontal,
+  ImagePlus, LoaderCircle, Maximize2, Palette, RefreshCw, Search, Settings2, SlidersHorizontal,
   Sparkles, Tag, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { Asset, Collection, Connection, Folder as FolderType, Result, SearchStrategy, Summary } from './types';
 import { CollectionEditor, CollectionTree, ExclusionEditor, orderedCollections } from './organization';
@@ -23,6 +23,12 @@ const bytes = (n: number) => n > 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` 
 const labels: Record<string, string> = { ready: '已索引', pending: '等待索引', error: '索引失败', missing: '文件已失联',
   completed: '已完成', running: '索引中', queued: '等待中', partial: '部分失败', failed: '失败', interrupted: '已中断' };
 const cleanError = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error invoking remote method '[^']+': Error: /, '');
+const settingsPages = [
+  { id: 'appearance', label: '外观', icon: Palette },
+  { id: 'folders', label: '关联目录', icon: Folder },
+  { id: 'data', label: '本地数据', icon: HardDrive },
+  { id: 'help', label: '帮助与关于', icon: CircleHelp },
+] as const;
 
 function App() {
   const appearance = useAppearance();
@@ -45,6 +51,7 @@ function App() {
   const [notice, setNotice] = useState('');
   const [tasksOpen, setTasksOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsPage, setSettingsPage] = useState<typeof settingsPages[number]['id']>('appearance');
   const [preview, setPreview] = useState(false);
   const [previewError, setPreviewError] = useState(false);
   const [dragging, setDragging] = useState(false);
@@ -411,7 +418,7 @@ function App() {
         {Boolean(summary.counts.error) && <button className="warning-link" onClick={() => chooseScope('error')}><TriangleAlert size={14}/> {summary.counts.error} 个文件索引失败</button>}
         {Boolean(summary.counts.missing) && <button className="muted-link" onClick={() => chooseScope('missing')}><Folder size={14}/> {summary.counts.missing} 个文件已失联</button>}
         <div className="local-status" role="status" aria-label="本地运行"><div className={`status-dot ${summary.model === 'error' ? 'error' : ''}`}/><div>本地运行<span>{summary.model === 'loading' ? '正在加载模型' : summary.model === 'ready' ? '模型已就绪 · 离线可用' : summary.model === 'error' ? '模型加载失败' : '搜索时自动加载模型'}</span></div></div>
-        <button className="settings-link" onClick={() => setSettingsOpen(true)}><Settings2 size={16}/> 设置与帮助 <span>⌘ K 搜索</span></button>
+        <button className="settings-link" onClick={() => { setSettingsPage('appearance'); setSettingsOpen(true); }}><Settings2 size={16}/> 设置与帮助 <span>⌘ K 搜索</span></button>
       </div>
     </aside>
     <section className="workspace">
@@ -631,16 +638,42 @@ function App() {
         : <div className="task-empty"><Check size={25}/><p>暂无索引任务</p></div>}</div></div>}
     {settingsOpen && <div className="modal-backdrop" onClick={() => setSettingsOpen(false)}><section className="settings-modal" role="dialog" aria-label="设置与帮助" onClick={e => e.stopPropagation()}>
       <div className="panel-heading"><div><h2>设置与帮助</h2></div><button title="关闭设置" onClick={() => setSettingsOpen(false)}><X size={20}/></button></div>
-      <div className="settings-content">
-      <AppearanceSettings {...appearance}/>
-      <div className="settings-info"><HardDrive size={22}/><div><strong>Prism Assets 0.3.1 · Apple Silicon</strong><p>图文检索与索引完全本地运行。支持静态图片与 TGA，以及 PMX、FBX、GLB、glTF 模型。模型预览需安装 Blender：{summary.blender_available ? '已检测到' : '未检测到，请安装到“应用程序”后重试索引'}。</p></div></div>
-      <h3>关联目录</h3>{summary.folders.map(f => <div className="folder-setting" key={f.id}><Folder size={18}/><div><strong>{f.name}</strong><p>{f.path}</p><small>{f.status === 'online' ? '在线' : '目录不可访问'} · {f.count} 个文件 · 已排除 {f.excluded_count} 个</small></div>
-        <button aria-label={`排除子目录 ${f.name}`} title={`排除子目录 ${f.name}`} onClick={() => setExclusionEditor(f)}>排除</button><button title={`重新扫描 ${f.name}`} onClick={() => scan(f)}><RefreshCw size={16}/></button><button title={`解除关联 ${f.name}`} onClick={() => run(async () => {
-        if (await window.prism.confirmDetach(f.name)) { await api(`/folders/${f.id}`, 'DELETE'); chooseScope('all'); await loadSummary(); setRefresh(n => n + 1); }
-      })}><Trash2 size={16}/></button></div>)}
-      <button className="add-folder inline" onClick={addFolder}><FolderPlus size={16}/> 关联文件夹</button>
-      <h3>本地数据</h3><p className="settings-copy">索引、标签、收藏和缩略图存放在下方目录。备份前请退出应用，再复制整个目录。</p><button className="data-path" onClick={() => window.prism.reveal(summary.data_dir)}>{summary.data_dir}<FolderOpen size={15}/></button>
-      <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型的两张外观预览图，不判断拓扑或动作。PMX 展示基础材质，MMD 特效不完整还原；当前不播放动画。图片限制 100 MB / 4000 万像素，模型限制 512 MB。暂不解析视频与 PSD。</p></div>
+      <div className="settings-layout">
+        <nav className="settings-nav" role="tablist" aria-label="设置分类" aria-orientation="vertical">
+          {settingsPages.map(({ id, label, icon: Icon }, index) => <button key={id} id={`settings-tab-${id}`} role="tab"
+            aria-selected={settingsPage === id} aria-controls={`settings-page-${id}`} tabIndex={settingsPage === id ? 0 : -1}
+            onClick={() => setSettingsPage(id)} onKeyDown={event => {
+              const next = event.key === 'ArrowDown' ? (index + 1) % settingsPages.length
+                : event.key === 'ArrowUp' ? (index + settingsPages.length - 1) % settingsPages.length
+                : event.key === 'Home' ? 0 : event.key === 'End' ? settingsPages.length - 1 : null;
+              if (next === null) return;
+              event.preventDefault(); setSettingsPage(settingsPages[next].id);
+              document.getElementById(`settings-tab-${settingsPages[next].id}`)?.focus();
+            }}><Icon size={16}/>{label}</button>)}
+        </nav>
+        <div key={settingsPage} id={`settings-page-${settingsPage}`} className="settings-content" role="tabpanel"
+          aria-labelledby={`settings-tab-${settingsPage}`} tabIndex={0}>
+          {settingsPage === 'appearance' && <AppearanceSettings {...appearance}/>}
+          {settingsPage === 'folders' && <>
+            <div className="settings-page-heading"><h3>关联目录</h3><p>管理素材来源，扫描变动或排除不需要收录的子目录。</p></div>
+            {summary.folders.length ? summary.folders.map(f => <div className="folder-setting" key={f.id}><Folder size={18}/><div><strong>{f.name}</strong><p title={f.path}>{f.path}</p><small>{f.status === 'online' ? '在线' : '目录不可访问'} · {f.count} 个文件 · 已排除 {f.excluded_count} 个</small></div>
+              <button aria-label={`排除子目录 ${f.name}`} title={`排除子目录 ${f.name}`} onClick={() => setExclusionEditor(f)}>排除</button><button title={`重新扫描 ${f.name}`} onClick={() => scan(f)}><RefreshCw size={16}/></button><button title={`解除关联 ${f.name}`} onClick={() => run(async () => {
+                if (await window.prism.confirmDetach(f.name)) { await api(`/folders/${f.id}`, 'DELETE'); chooseScope('all'); await loadSummary(); setRefresh(n => n + 1); }
+              })}><Trash2 size={16}/></button></div>)
+              : <p className="settings-empty">还没有关联目录。添加素材文件夹后，会在这里显示。</p>}
+            <button className="add-folder inline" onClick={addFolder}><FolderPlus size={16}/> 关联文件夹</button>
+          </>}
+          {settingsPage === 'data' && <>
+            <div className="settings-page-heading"><h3>本地数据</h3><p>索引、标签、收藏和缩略图都保存在本机。</p></div>
+            <button className="data-path" title="在 Finder 中显示数据目录" onClick={() => window.prism.reveal(summary.data_dir)}><span>{summary.data_dir}</span><FolderOpen size={16}/></button>
+            <p className="settings-copy">备份前请退出应用，再复制整个数据目录。</p>
+          </>}
+          {settingsPage === 'help' && <>
+            <div className="settings-page-heading"><h3>帮助与关于</h3><p>版本、运行环境与支持范围。</p></div>
+            <div className="settings-info"><HardDrive size={22}/><div><strong>Prism Assets 0.3.1 · Apple Silicon</strong><p>图文检索与索引完全本地运行。支持静态图片与 TGA，以及 PMX、FBX、GLB、glTF 模型。</p><p>模型预览需安装 Blender：{summary.blender_available ? '已检测到' : '未检测到，请安装到“应用程序”后重试索引'}。</p></div></div>
+            <div className="help-note"><CircleHelp size={17}/><p>3D 检索基于模型的两张外观预览图，不判断拓扑或动作。PMX 展示基础材质，MMD 特效不完整还原；当前不播放动画。图片限制 100 MB / 4000 万像素，模型限制 512 MB。暂不解析视频与 PSD。</p></div>
+          </>}
+        </div>
       </div>
     </section></div>}
     {collectionEditor && <CollectionEditor collection={collectionEditor === 'new' ? undefined : collectionEditor}

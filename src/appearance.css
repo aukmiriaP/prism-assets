@@ -1,8 +1,8 @@
-.appearance-settings{margin:20px 0 24px;padding:20px 0;border-top:1px solid var(--line);border-bottom:1px solid var(--line)}
-.appearance-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:18px}
-.appearance-heading h3{font-size:13px;font-weight:600}
+.appearance-settings{margin:0;padding:0}
+.appearance-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:24px}
+.appearance-heading h3{font-size:15px;font-weight:600}
 .appearance-heading>span{font-size:11px;color:var(--muted)}
-.appearance-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:14px}
+.appearance-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-top:22px}
 .appearance-row>span{font-size:12px;color:var(--text-secondary);white-space:nowrap}
 .theme-modes{display:flex;gap:3px;padding:3px;background:var(--surface-subtle);border-radius:6px}
 .theme-modes>button{padding:7px 10px;border-radius:5px;font-size:12px;color:var(--text-secondary)}

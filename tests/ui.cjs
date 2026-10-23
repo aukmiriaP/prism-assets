@@ -141,6 +141,7 @@ async function launch() {
     await expect(page.locator('.collection-nav')).toContainText('项目参考');
     // Directory exclusions are previewable, reversible and survive filesystem changes.
     await page.getByRole('button', { name: /设置与帮助/ }).click();
+    await page.getByRole('tab', { name: '关联目录', exact: true }).click();
     await page.getByRole('button', { name: '排除子目录 素材测试' }).click();
     await page.getByLabel('排除规则').fill('copies');
     await page.getByRole('button', { name: '预览影响' }).click();
@@ -161,6 +162,7 @@ async function launch() {
     await expect(page.locator('.asset-tags')).toContainText('形状参考');
     await expect(page.locator('.asset-tags')).toContainText('批量参考');
     await page.getByRole('button', { name: /设置与帮助/ }).click();
+    await page.getByRole('tab', { name: '关联目录', exact: true }).click();
     await page.getByRole('button', { name: '排除子目录 素材测试' }).click();
     await page.getByLabel('排除规则').fill('');
     await page.getByRole('button', { name: '预览影响' }).click();
