@@ -1,6 +1,8 @@
 .motion-workspace{display:flex;flex:1;min-height:0}
 .motion-stage-label{position:absolute;top:18px;left:20px;font-size:11px;color:var(--text-secondary);pointer-events:none}
 .motion-stage-label span{display:block;color:var(--muted);margin-top:6px;font-size:10px}
+.motion-physics-progress{position:absolute;bottom:20px;left:20px;right:20px;width:fit-content;max-width:calc(100% - 40px);padding:10px 14px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--text-secondary);font-size:11px;pointer-events:none}
+.motion-physics-progress span{display:block;margin-top:5px;font-size:10px;color:var(--muted)}
 .motion-options{width:264px;flex-shrink:0;border-left:1px solid var(--line);overflow-y:auto;padding:18px 16px;scrollbar-gutter:stable}
 .motion-options>label{display:block;font-size:11px;color:var(--text-secondary);margin-bottom:16px}
 .motion-options select{display:block;width:100%;margin-top:7px;padding:7px 8px;font-size:11px;background:var(--input);border:1px solid var(--line);border-radius:5px;color:var(--text);text-overflow:ellipsis}
@@ -9,6 +11,7 @@
 .motion-options button{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);text-align:left}
 .motion-options p{font-size:10px;color:var(--muted);line-height:1.8;overflow-wrap:anywhere}
 .motion-options .motion-model-note{margin:-5px 0 18px}
+.motion-options .motion-physics-note{margin:-6px 0 16px}
 .motion-options details{padding:16px 0;border-bottom:1px solid var(--line)}
 .motion-options summary{font-size:11px;color:var(--text-secondary);cursor:pointer}
 .motion-docs{display:flex;flex-direction:column;gap:11px;padding-top:20px}

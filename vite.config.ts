@@ -5,7 +5,7 @@ export default defineConfig(({ command }) => ({
     name: 'prism-local-development-csp',
     transformIndexHtml(html: string) {
       // Vite's React refresh preamble and local HMR socket are development-only.
-      return html.replace("script-src 'self';", "script-src 'self' 'unsafe-inline';")
+      return html.replace("script-src 'self' 'wasm-unsafe-eval';", "script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline';")
         .replace("connect-src 'self'", "connect-src 'self' ws://127.0.0.1:*");
     },
   }] : [])],

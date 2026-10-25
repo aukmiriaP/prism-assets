@@ -6,6 +6,9 @@ import { createPreviewStage } from './preview-stage';
 import { PreviewCanvas, PreviewDialog, PreviewEnvironment, PreviewLoading } from './preview';
 import { animateMotion, buildMotionMesh, mergeMotion, type Vmd } from './motion-rig';
 import { buildDefaultMotionMesh, DEFAULT_MOTION_MODEL, MOTION_MODEL_STORAGE } from './motion-mannequin';
+import { configureModelMaterials } from './model-materials';
+import { physicsBoneIndices, serializePhysicsRig } from './motion-physics-core';
+import { createMotionPhysics, idlePhysics, type PhysicsStatus } from './motion-physics';
 import './motion.css';
 
 export const motionLabel = (asset: Asset) => ({ body: '身体动作', facial: '表情动作', camera: '镜头动作', other: '其他轨道' }[asset.motion?.type || 'other']);
@@ -35,10 +38,16 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
   const [time, setTime] = useState(0), [duration, setDuration] = useState(0);
   const [loading, setLoading] = useState(true), [ready, setReady] = useState(false);
   const [error, setError] = useState(''), [audioError, setAudioError] = useState('');
+  const [physicsOn, setPhysicsOn] = useState(() => {
+    try { return localStorage.getItem('prism.motion-physics.v1') !== 'off'; } catch { return true; }
+  });
+  const [physicsBones, setPhysicsBones] = useState(0);
+  const [physicsStatus, setPhysicsStatus] = useState<PhysicsStatus>(idlePhysics('unavailable'));
   const [report, setReport] = useState({ matched: 0, total: 0, missing: [] as string[], warnings: [] as string[] });
   const [document, setDocument] = useState<{ name: string; text: string } | null>(null);
-  const clock = useRef({ time: 0, playing: false, speed: 1, loop: true, camera: false, skeleton: false });
-  const stage = useRef({ seek: (_time: number) => {}, reset: () => {} });
+  const clock = useRef({ time: 0, playing: false, speed: 1, loop: true, camera: false, skeleton: false,
+    physics: physicsOn, buffering: false });
+  const stage = useRef({ seek: (_time: number) => {}, reset: () => {}, physics: (_enabled: boolean) => {} });
   const audio = useRef<HTMLAudioElement | null>(null);
   const selectedModel = models.find(m => m.id === modelId);
   const builtin = modelId === DEFAULT_MOTION_MODEL;
@@ -75,10 +84,16 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
   }, [cameraMode, skeleton]);
 
   useEffect(() => {
+    clock.current.physics = physicsOn;
+    try { localStorage.setItem('prism.motion-physics.v1', physicsOn ? 'on' : 'off'); } catch { /* Session-only preference. */ }
+    stage.current.physics(physicsOn);
+  }, [physicsOn]);
+
+  useEffect(() => {
     Object.assign(clock.current, { playing, speed, loop });
     if (audio.current) {
       audio.current.playbackRate = speed;
-      if (!playing) audio.current.pause();
+      if (!playing || clock.current.buffering) audio.current.pause();
       else if (clock.current.time < audio.current.duration) {
         audio.current.currentTime = clock.current.time;
         audio.current.play().catch(() => setAudioError('音乐未能播放，请关闭音乐后重试。'));
@@ -98,7 +113,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       if (disposed) return;
       player.currentTime = Math.min(clock.current.time, player.duration);
       player.playbackRate = clock.current.speed;
-      if (clock.current.playing && clock.current.time < player.duration)
+      if (clock.current.playing && !clock.current.buffering && clock.current.time < player.duration)
         player.play().catch(() => { if (!disposed) setAudioError('音乐未能播放，请重新开启音乐。'); });
     };
     (async () => {
@@ -117,8 +132,10 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
     const holder = mount.current, abort = new AbortController();
     let disposed = false, rig: ReturnType<typeof buildMotionMesh> | undefined;
     let animation: ReturnType<typeof animateMotion> | undefined, bones: THREE.SkeletonHelper | undefined;
+    let physics: ReturnType<typeof createMotionPhysics> | undefined, poseDirty = false;
     let preview: ReturnType<typeof createPreviewStage>;
     setLoading(true); setReady(false); setPlaying(false); setError(''); setTime(0); clock.current.time = 0; clock.current.playing = false;
+    setPhysicsBones(0); setPhysicsStatus(idlePhysics('unavailable')); clock.current.buffering = false;
     audio.current?.pause();
     try { preview = createPreviewStage(holder); }
     catch { setError('无法创建 3D 画布，请检查系统图形支持'); setLoading(false); return; }
@@ -129,9 +146,11 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
     const seek = (value: number) => {
       clock.current.time = THREE.MathUtils.clamp(value, 0, clipDuration);
       animation?.sample(clock.current.time); setTime(clock.current.time);
+      clock.current.buffering = physics ? !physics.apply(rig!.mesh, clock.current.time) : false;
+      if (clock.current.buffering) audio.current?.pause();
       if (audio.current?.readyState && Math.abs(audio.current.currentTime - clock.current.time) > .12)
         audio.current.currentTime = Math.min(clock.current.time, audio.current.duration);
-      if (audio.current?.readyState && clock.current.playing && audio.current.paused && clock.current.time < audio.current.duration)
+      if (audio.current?.readyState && clock.current.playing && !clock.current.buffering && audio.current.paused && clock.current.time < audio.current.duration)
         audio.current.play().catch(() => { if (!disposed) setAudioError('音乐未能继续播放，请重新开启音乐。'); });
     };
     stage.current.seek = seek;
@@ -151,6 +170,8 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       const data = mergeMotion(base, facial);
       clipDuration = Math.max(base.info.duration, facial?.info.duration || 0, camera?.info.duration || 0);
       data.info = { ...data.info, duration: clipDuration };
+      const physicsRig = serializePhysicsRig(model.mesh);
+      const dynamicBones = physicsBoneIndices(physicsRig).length;
       animation = animateMotion(model.mesh, model.loader, data, originalCamera, camera);
       const warnings = [...base.info.warnings, ...(facial?.info.warnings || []), ...(camera?.info.warnings || [])];
       if (builtin) warnings.push('内置人形用于检查身体与手指动作，没有面部表情变形；需要表情时请选择带对应表情的 PMX。');
@@ -179,6 +200,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
         } catch (e) { if (disposed) return; warnings.push(`纹理读取失败：${ref}`); }
       }
       if (disposed) return;
+      if (!builtin) configureModelMaterials(model.mesh, 'pmx');
       model.mesh.geometry.computeBoundingBox();
       preview.frame(model.mesh.geometry.boundingBox!, 0);
       stage.current.reset = preview.reset;
@@ -186,16 +208,29 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       (bones.material as THREE.LineBasicMaterial).depthTest = false; bones.renderOrder = 10; scene.add(bones);
       setDuration(clipDuration); setReport({ matched: animation.matched.length, total: data.info.active_bones.length,
         missing: animation.missing, warnings: [...new Set(warnings)] });
-      seek(0); setReady(true); setLoading(false);
+      setPhysicsBones(dynamicBones);
+      stage.current.physics = enabled => {
+        physics?.dispose(); physics = undefined;
+        if (enabled && dynamicBones) {
+          physics = createMotionPhysics({ rig: physicsRig, motion: data }, status => {
+            if (disposed) return;
+            setPhysicsStatus(status); poseDirty = true;
+          });
+        } else setPhysicsStatus(idlePhysics(dynamicBones ? 'off' : 'unavailable'));
+        seek(clock.current.time);
+      };
+      stage.current.physics(clock.current.physics);
+      setReady(true); setLoading(false);
     })().catch(e => { if (!disposed) { setError(String(e.message || e)); setLoading(false); } });
     preview.start(elapsed => {
       const state = clock.current;
-      if (animation && state.playing) {
+      if (poseDirty) { poseDirty = false; seek(state.time); }
+      if (animation && state.playing && !state.buffering) {
         let next = state.time + elapsed * state.speed;
         if (next >= clipDuration) {
           if (state.loop && clipDuration > 0) {
             next %= clipDuration;
-            if (audio.current?.readyState) { audio.current.currentTime = next; audio.current.play().catch(() => {}); }
+            if (audio.current?.readyState) audio.current.currentTime = next;
           } else { next = clipDuration; state.playing = false; setPlaying(false); audio.current?.pause(); }
         }
         seek(next);
@@ -205,7 +240,8 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
     });
     return () => {
       disposed = true; abort.abort(); preview.dispose();
-      stage.current = { seek: () => {}, reset: () => {} };
+      stage.current = { seek: () => {}, reset: () => {}, physics: () => {} };
+      physics?.dispose(); clock.current.buffering = false;
       animation?.dispose();
       if (rig) { rig.mesh.skeleton.dispose(); rig.mesh.geometry.dispose(); rig.materials.forEach(m => m.dispose()); }
       if (bones) { bones.geometry.dispose(); (bones.material as THREE.Material).dispose(); }
@@ -218,9 +254,12 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
   return <PreviewDialog label="人形动作预览" title={asset.path.split('/').slice(-2, -1)[0]} subtitle={`${asset.name} · MMD 人形动作`}
     icon={<Activity size={19}/>} closeLabel="关闭动作预览" close={close} className="motion-dialog">
       <div className="motion-workspace">
-        <PreviewCanvas className="motion-stage" mount={mount} data-ready={ready} data-model={modelId} aria-label="人形动作画布">
+        <PreviewCanvas className="motion-stage" mount={mount} data-ready={ready} data-model={modelId} data-physics={physicsStatus.phase} aria-label="人形动作画布">
           {(loading || error) && <PreviewLoading className="motion-loading" loading={loading} title={error || '正在加载角色与动作…'} description={loading ? '读取本地骨架、蒙皮与贴图' : undefined}/>}
           {ready && <div className="motion-stage-label">{cameraMode && cameraId ? '原始镜头' : '自由机位'}<span>{report.matched} / {report.total} 有效骨骼匹配</span></div>}
+          {ready && physicsStatus.phase === 'buffering' && <div className="motion-physics-progress" role="status">
+            {physicsStatus.target < .01 ? '正在准备头发与衣裙物理…' : `正在计算物理 ${motionTime(Math.min(physicsStatus.completed, physicsStatus.target))} / ${motionTime(physicsStatus.target)}`}
+            <span>就绪后继续播放，可拖动时间轴或关闭物理</span></div>}
         </PreviewCanvas>
         <aside className="motion-options">
           <label>预览角色<select aria-label="预览角色" value={modelId} onChange={e => selectModel(e.target.value)}>
@@ -238,10 +277,15 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
           {audioError && <p className="asset-error">{audioError}</p>}
           <div className="motion-options-actions"><label className="motion-check"><input type="checkbox" checked={skeleton} onChange={e => setSkeleton(e.target.checked)}/>骨架叠加</label>
             <button disabled={!ready} onClick={() => { setCameraMode(false); stage.current.reset(); }}><RotateCcw size={13}/>复位视角</button></div>
+          <label className="motion-check"><input type="checkbox" aria-label="头发与衣裙物理" checked={physicsOn && physicsBones > 0}
+            disabled={!ready || !physicsBones} onChange={e => setPhysicsOn(e.target.checked)}/>头发与衣裙物理</label>
+          <p className="motion-physics-note">{!physicsBones ? (builtin ? '内置人形没有头发与衣裙物理。' : '此角色没有可模拟的物理骨骼。')
+            : physicsStatus.phase === 'error' ? `物理不可用：${physicsStatus.error}。已回退到普通动作，可关闭后重试。`
+            : physicsOn ? '使用角色自带的碰撞与弹性约束；效果取决于模型的物理配置。' : '物理已关闭，可开启对照头发与衣裙效果。'}</p>
           <PreviewEnvironment/>
           <p>自由机位：拖动旋转，滚轮缩放，右键平移。</p>
           <details><summary>预览范围与匹配详情</summary>
-            <p>基础材质、蒙皮、骨骼 IK 与旋转继承。暂不模拟头发、衣裙物理与 MMD 特效；骨骼、UV 和材质变形不完整支持。</p>
+            <p>基础材质、蒙皮、骨骼 IK、旋转继承与 PMX 刚体物理。头发、衣裙使用模型自带的碰撞体，不保证消除所有穿模；不支持布料网格模拟、MMD 特效，骨骼、UV 和材质变形不完整支持。</p>
             {report.missing.length > 0 && <p>缺失有效骨骼：{report.missing.join('、')}</p>}
             {report.warnings.map(w => <p key={w}>{w}</p>)}</details>
           <div className="motion-docs"><span>包内说明与使用约定</span>{bundle.files.filter(f => f.kind === 'document').map(f =>

@@ -56,6 +56,17 @@ async function frame(number) {
 async function launch(environment = env) {
   instance = await electron.launch({ args: [path.join(root, 'tests/material-ui-main.cjs')], cwd: root, env: environment, timeout: 60000 });
   page = await instance.firstWindow();
+  await page.evaluate(() => {
+    const NativeWorker = window.Worker;
+    window.__physicsWorkers = new Set();
+    window.Worker = class extends NativeWorker {
+      constructor(...args) {
+        if (window.__failPhysicsWorker) throw new Error('测试：物理线程不可用');
+        super(...args); window.__physicsWorkers.add(this);
+      }
+      terminate() { window.__physicsWorkers.delete(this); return super.terminate(); }
+    };
+  });
   page.on('pageerror', e => { errors.push(e.message); console.error('RENDERER_ERROR', e.message); });
   page.on('request', request => { if (/^https?:/.test(request.url()) && !request.url().startsWith('http://127.0.0.1:')) errors.push('external request'); });
   await instance.evaluate(({ BrowserWindow }) => {
@@ -78,6 +89,8 @@ async function launch(environment = env) {
     await ready();
     await expect(viewer().getByLabel('预览角色')).toHaveValue('builtin-prism-mannequin');
     await expect(viewer().getByLabel('预览角色').locator('option')).toHaveCount(1);
+    await expect(viewer().getByLabel('头发与衣裙物理')).toBeDisabled();
+    await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'unavailable');
     await expect(viewer().locator('.motion-stage-label')).toContainText('50 / 50');
     await expect(viewer().getByLabel('地面网格')).not.toBeChecked();
     await frame(150); await shot('prism-motion-default-light.png');
@@ -251,12 +264,63 @@ async function launch(environment = env) {
     for (const id of modelOptions) {
       await viewer().getByLabel('预览角色').selectOption(id); await ready(); await frame(150);
       await expect(viewer().locator('.motion-stage-label')).toContainText('51 / 51');
+      if (id === 'builtin-prism-mannequin') continue;
+      await expect(viewer().getByLabel('头发与衣裙物理')).toBeChecked();
+      await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
+      await rememberCanvas();
+      const physicsRequestCount = assetRequests.length;
+      const withPhysics = await viewer().locator('canvas').screenshot();
+      await frame(300); await frame(0); await frame(150);
+      await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
+      await expect.poll(async () => pixelDifference(withPhysics, await viewer().locator('canvas').screenshot())).toBeLessThan(.001);
+      await shot(`prism-motion-physics-on-${id}.png`);
+      await viewer().getByLabel('头发与衣裙物理').uncheck();
+      await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'off');
+      await sameCanvas();
+      await expect(viewer().getByRole('slider', { name: '动作时间轴' })).toHaveValue('150');
+      expect(pixelDifference(withPhysics, await viewer().locator('canvas').screenshot())).toBeGreaterThan(.001);
+      await shot(`prism-motion-physics-off-${id}.png`);
+      expect(await page.evaluate(() => window.__physicsWorkers.size)).toBe(0);
+      await viewer().getByLabel('头发与衣裙物理').check();
+      await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
+      await expect.poll(async () => pixelDifference(withPhysics, await viewer().locator('canvas').screenshot())).toBeLessThan(.001);
+      await sameCanvas(); expect(assetRequests.length).toBe(physicsRequestCount);
+      expect(await page.evaluate(() => window.__physicsWorkers.size)).toBe(1);
+      console.log('PHYSICS_UI_OK', id, 'pose changes, deterministic seek/restart, canvas/time retained');
     }
+    // Failed initialization must stay playable, and switching off/on must recover without reloading the model.
+    await viewer().getByLabel('头发与衣裙物理').uncheck();
+    await page.evaluate(() => { window.__failPhysicsWorker = true; });
+    await viewer().getByLabel('头发与衣裙物理').check();
+    await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'error');
+    await expect(viewer().locator('.motion-physics-note')).toContainText('已回退到普通动作');
+    await frame(180);
+    await page.evaluate(() => { window.__failPhysicsWorker = false; });
+    await viewer().getByLabel('头发与衣裙物理').uncheck();
+    await viewer().getByLabel('头发与衣裙物理').check();
+    await frame(450); await frame(120);
+    await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
+    await expect(viewer().getByRole('slider', { name: '动作时间轴' })).toHaveValue('120');
+    await viewer().getByLabel('音乐', { exact: true }).selectOption(music);
+    await viewer().getByRole('button', { name: '播放动作', exact: true }).click();
+    await expect.poll(async () => Number(await viewer().getByRole('slider', { name: '动作时间轴' }).inputValue())).toBeGreaterThan(130);
+    await expect.poll(async () => instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.isCurrentlyAudible())).toBe(true);
+    await viewer().getByRole('button', { name: '暂停动作', exact: true }).click();
+    await viewer().getByLabel('音乐', { exact: true }).selectOption('');
+    await frame(499);
+    await viewer().getByRole('button', { name: '播放动作', exact: true }).click();
+    await expect.poll(async () => Number(await viewer().getByRole('slider', { name: '动作时间轴' }).inputValue()), { timeout: 30000 }).toBeLessThan(100);
+    await viewer().getByRole('button', { name: '暂停动作', exact: true }).click();
+    // Cancel fresh computation during a model switch and while closing.
+    await viewer().getByLabel('预览角色').selectOption(modelOptions[1]); await ready(); await frame(450);
+    await viewer().getByLabel('预览角色').selectOption(modelOptions.at(-1)); await ready(); await frame(450);
     await page.keyboard.press('Escape'); await expect(viewer()).toHaveCount(0);
+    expect(await page.evaluate(() => window.__physicsWorkers.size)).toBe(0);
     await page.getByRole('button', { name: /设置与帮助/ }).click();
     await page.getByRole('button', { name: '深色', exact: true }).click();
     await page.getByRole('button', { name: '关闭设置', exact: true }).click();
     await page.locator('.inspector-preview').click(); await ready(); await frame(120);
+    await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
     await expect(viewer().getByLabel('预览角色')).toHaveValue(modelOptions.at(-1));
     await shot('prism-motion-dark.png');
     await instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1040, 680));
@@ -267,6 +331,7 @@ async function launch(environment = env) {
     await shot('prism-motion-small.png');
     await viewer().getByRole('button', { name: '关闭动作预览', exact: true }).click();
     await expect(page.locator('.motion-stage canvas')).toHaveCount(0);
+    expect(await page.evaluate(() => window.__physicsWorkers.size)).toBe(0);
     await page.getByLabel('文字搜索方式').selectOption('keyword');
     await page.getByRole('textbox', { name: '语义搜索' }).fill('motion');
     await page.getByRole('textbox', { name: '语义搜索' }).press('Enter');
@@ -280,7 +345,7 @@ async function launch(environment = env) {
     await page.keyboard.press('Escape');
     await expect(page.locator('.preview-canvas canvas')).toHaveCount(0);
     expect(errors).toEqual([]);
-    console.log('MOTION_UI_OK: shared model/motion stage, grid/shadow pixels and bidirectional preferences, retained camera/time/canvas/audio, wireframe/material isolation/reset, no-model built-in preview/fallback, remembered selection, automatic packages, 3 PMX characters, playback/step/loop/rate, facial/camera/audio/docs, themes/minimum size, cleanup; artifacts', output);
+    console.log('MOTION_UI_OK: local WASM physics on 3 PMX, visible pose changes, deterministic seek/restart, retained canvas/time/assets, failure fallback/recovery, audio/loop/cancel/worker cleanup; shared stage, packages, built-in, playback, facial/camera/docs, themes/minimum size; artifacts', output);
   } catch (error) {
     if (page && !page.isClosed()) {
       await shot('prism-motion-failure.png').catch(() => {});

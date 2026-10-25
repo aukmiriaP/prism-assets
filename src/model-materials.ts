@@ -7,7 +7,9 @@ import { Material, Mesh, Object3D } from 'three';
  * Alpha hashing preserves each fragment's alpha while restoring depth occlusion,
  * matching the source preview more closely than object-sorted blending.
  *
- * Scope this to our PMX proxies. Authored FBX/glTF transparency remains untouched.
+ * Native PMX motion previews also mark textured materials transparent so texture
+ * alpha is honored; apply the same depth correction to those materials.
+ * Scope this to PMX previews. Authored FBX/glTF transparency remains untouched.
  * Applying at load time also repairs already-indexed v0.3 proxies without rebuilds.
  */
 export function configureModelMaterials(root: Object3D, format: string): void {

@@ -17,7 +17,7 @@
     "test:models": ".venv/bin/python tests/models.py",
     "test:materials": ".venv/bin/python tests/material_assets.py && .venv/bin/python tests/material_catalog.py",
     "test:materials-ui": "node tests/materials-ui.cjs",
-    "test:motions": ".venv/bin/python tests/motions.py && node tests/motion-rig.cjs",
+    "test:motions": ".venv/bin/python tests/motions.py && node tests/motion-rig.cjs && node tests/motion-physics.cjs",
     "test:motions-ui": "node tests/motions-ui.cjs",
     "test:retry": ".venv/bin/python tests/retry.py",
     "test:retry-ui": "node tests/retry-ui.cjs",
@@ -27,6 +27,7 @@
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.0",
+    "ammojs3": "0.0.11",
     "lucide-react": "^0.468.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
