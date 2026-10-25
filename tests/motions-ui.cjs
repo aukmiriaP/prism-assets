@@ -9,7 +9,33 @@ const env = { ...process.env, PRISM_USER_DATA: path.join(temp, 'electron'), PRIS
 for (const key of ['ELECTRON_RUN_AS_NODE', 'PRISM_DEV_URL', 'PYTHONPATH', 'PYTHONHOME', 'VIRTUAL_ENV']) delete env[key];
 let instance, page;
 const errors = [];
+function pixelDifference(before, after) {
+  const left = path.join(temp, 'compare-before.png'), right = path.join(temp, 'compare-after.png');
+  fs.writeFileSync(left, before); fs.writeFileSync(right, after);
+  return Number(execFileSync(path.join(root, '.venv/bin/python'), ['-c', `
+import sys,numpy as np
+from PIL import Image
+a,b=[np.asarray(Image.open(p).convert("RGB")).astype(np.int16) for p in sys.argv[1:]]
+print(np.mean(np.max(np.abs(a-b),axis=2)>8))
+`, left, right], { encoding: 'utf8' }));
+}
 const viewer = () => page.getByRole('dialog', { name: '人形动作预览', exact: true });
+const modelViewer = () => page.getByRole('dialog', { name: '3D 模型预览', exact: true });
+async function openModel() {
+  await page.getByRole('button', { name: /^3D 模型/ }).click();
+  await page.getByRole('button', { name: '模型分组 鸣潮_锁暝1.0.pmx', exact: true }).click();
+  await page.getByRole('button', { name: '素材 鸣潮_锁暝1.0.pmx', exact: true }).dblclick();
+  await expect(modelViewer()).toBeVisible();
+  await expect(modelViewer().locator('.model-loading')).toHaveCount(0, { timeout: 60000 });
+}
+async function sameCanvas() {
+  expect(await page.evaluate(() => document.querySelector('.preview-canvas canvas') === window.__previewCanvas)).toBe(true);
+}
+const rememberCanvas = () => page.evaluate(() => { window.__previewCanvas = document.querySelector('.preview-canvas canvas'); });
+async function changeTheme(mode) {
+  await page.emulateMedia({ colorScheme: mode });
+  await expect(page.locator('html')).toHaveAttribute('data-theme', mode);
+}
 const ready = async () => {
   await expect(viewer()).toBeVisible({ timeout: 10000 });
   await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-ready', 'true', { timeout: 90000 });
@@ -30,7 +56,7 @@ async function frame(number) {
 async function launch(environment = env) {
   instance = await electron.launch({ args: [path.join(root, 'tests/material-ui-main.cjs')], cwd: root, env: environment, timeout: 60000 });
   page = await instance.firstWindow();
-  page.on('pageerror', e => errors.push(e.message));
+  page.on('pageerror', e => { errors.push(e.message); console.error('RENDERER_ERROR', e.message); });
   page.on('request', request => { if (/^https?:/.test(request.url()) && !request.url().startsWith('http://127.0.0.1:')) errors.push('external request'); });
   await instance.evaluate(({ BrowserWindow }) => {
     const win = BrowserWindow.getAllWindows()[0]; win.setSize(1440, 940); win.webContents.setBackgroundThrottling(false);
@@ -63,10 +89,67 @@ async function launch(environment = env) {
     await page.getByRole('button', { name: '关闭设置', exact: true }).click();
     await page.locator('.inspector-preview').click(); await ready();
     await expect(viewer().getByLabel('预览角色')).toHaveValue('builtin-prism-mannequin');
+    await expect(viewer().getByLabel('地面网格')).toBeChecked();
+    await viewer().getByLabel('地面网格').uncheck();
     await frame(120); await shot('prism-motion-default-dark.png');
     expect(modelRequests).toEqual([]);
     await instance.close();
     await launch();
+    await page.getByRole('button', { name: /设置与帮助/ }).click();
+    await page.getByRole('button', { name: '跟随系统', exact: true }).click();
+    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+    await changeTheme('light');
+    const assetRequests = [];
+    page.on('request', request => {
+      if (/\/assets\/.*\/(model|motion|motion-model|motion-textures)(\?|\/|$)/.test(request.url())) assetRequests.push(request.url());
+    });
+    await openModel(); await rememberCanvas();
+    await expect(modelViewer().getByLabel('地面网格')).not.toBeChecked();
+    await expect(modelViewer().getByLabel('地面阴影')).toBeChecked();
+    await shot('prism-shared-model-light.png');
+    const staticCanvas = modelViewer().locator('canvas');
+    const litModel = await staticCanvas.screenshot();
+    const requestCount = assetRequests.length;
+    await modelViewer().getByLabel('地面阴影').uncheck();
+    expect(pixelDifference(litModel, await staticCanvas.screenshot())).toBeGreaterThan(.001);
+    await modelViewer().getByLabel('地面阴影').check();
+    await expect.poll(async () => pixelDifference(litModel, await staticCanvas.screenshot())).toBeLessThan(.001);
+    const box = await staticCanvas.boundingBox();
+    await page.mouse.move(box.x + box.width * .45, box.y + box.height * .5);
+    await page.mouse.down(); await page.mouse.move(box.x + box.width * .65, box.y + box.height * .5, { steps: 15 }); await page.mouse.up();
+    // Damping converges per rendered frame, not wall time (GPU load varies).
+    await page.evaluate(() => new Promise(resolve => {
+      let frames = 0;
+      const step = () => { if (++frames >= 320) resolve(); else requestAnimationFrame(step); };
+      requestAnimationFrame(step);
+    }));
+    const rotated = await staticCanvas.screenshot();
+    expect(pixelDifference(litModel, rotated)).toBeGreaterThan(.01);
+    await modelViewer().getByLabel('地面网格').check();
+    expect(pixelDifference(rotated, await staticCanvas.screenshot())).toBeGreaterThan(.001);
+    await modelViewer().getByLabel('地面网格').uncheck();
+    // Permit subpixel/alpha-hash edge noise while detecting a changed camera or environment.
+    await expect.poll(async () => pixelDifference(rotated, await staticCanvas.screenshot())).toBeLessThan(.001);
+    await modelViewer().getByLabel('线框', { exact: true }).check();
+    const wireframe = await staticCanvas.screenshot();
+    expect(pixelDifference(rotated, wireframe)).toBeGreaterThan(.001);
+    await modelViewer().getByLabel('隔离材质').selectOption({ index: 1 });
+    expect(pixelDifference(wireframe, await staticCanvas.screenshot())).toBeGreaterThan(.001);
+    await changeTheme('dark'); await sameCanvas();
+    await expect(modelViewer().getByLabel('线框', { exact: true })).toBeChecked();
+    await expect(modelViewer().getByLabel('隔离材质')).not.toHaveValue('');
+    await modelViewer().getByLabel('线框', { exact: true }).uncheck();
+    await modelViewer().getByRole('button', { name: '复位视角' }).click();
+    await expect(modelViewer().getByLabel('隔离材质')).toHaveValue('');
+    await shot('prism-shared-model-dark.png');
+    await changeTheme('light');
+    await expect.poll(async () => pixelDifference(litModel, await staticCanvas.screenshot())).toBeLessThan(.001);
+    await sameCanvas(); expect(assetRequests.length).toBe(requestCount);
+    // Preferences made in a model preview must carry into a newly opened motion preview.
+    await modelViewer().getByLabel('地面网格').check();
+    await modelViewer().getByLabel('地面阴影').uncheck();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.model-canvas canvas')).toHaveCount(0);
     await page.evaluate(async source => window.prism.api('/folders', 'POST', { path: source }), path.join(root, '../datasets/motion'));
     await expect.poll(async () => page.evaluate(async () => (await window.prism.api('/summary')).motions), { timeout: 60000 }).toBe(3);
     await page.getByRole('button', { name: /^动作\s*\d/ }).click();
@@ -96,7 +179,22 @@ async function launch(environment = env) {
     await expect(viewer().locator('.motion-stage-label')).toContainText('50 / 50');
     await expect(viewer().getByRole('button', { name: '播放动作', exact: true })).toBeEnabled();
     await expect(viewer().getByLabel('音乐', { exact: true })).toHaveValue('');
+    await expect(viewer().getByLabel('地面网格')).toBeChecked();
+    await expect(viewer().getByLabel('地面阴影')).not.toBeChecked();
     await frame(150);
+    await rememberCanvas();
+    const motionRequestCount = assetRequests.length;
+    const gridFrame = await viewer().locator('canvas').screenshot();
+    await viewer().getByLabel('地面网格').uncheck();
+    expect(Buffer.compare(gridFrame, await viewer().locator('canvas').screenshot())).not.toBe(0);
+    const noShadow = await viewer().locator('canvas').screenshot();
+    await viewer().getByLabel('地面阴影').check();
+    expect(Buffer.compare(noShadow, await viewer().locator('canvas').screenshot())).not.toBe(0);
+    await expect(viewer().getByRole('slider', { name: '动作时间轴' })).toHaveValue('150');
+    await changeTheme('dark'); await sameCanvas();
+    await expect(viewer().getByRole('slider', { name: '动作时间轴' })).toHaveValue('150');
+    await changeTheme('light');
+    await sameCanvas(); expect(assetRequests.length).toBe(motionRequestCount);
     await shot('prism-motion-light.png');
     const imageAt150 = await viewer().locator('canvas').screenshot();
     await frame(300);
@@ -127,9 +225,22 @@ async function launch(environment = env) {
     await shot('prism-motion-original-camera.png');
     await viewer().getByLabel('使用原始镜头').uncheck();
     const music = await viewer().getByLabel('音乐', { exact: true }).locator('option').last().getAttribute('value');
+    await page.evaluate(() => {
+      window.__audioPlays = 0;
+      const play = HTMLMediaElement.prototype.play;
+      HTMLMediaElement.prototype.play = function (...args) { window.__audioPlays++; return play.apply(this, args); };
+    });
     await viewer().getByLabel('音乐', { exact: true }).selectOption(music);
     await viewer().getByRole('button', { name: '播放动作', exact: true }).click();
     await expect.poll(async () => instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].webContents.isCurrentlyAudible()), { timeout: 10000 }).toBe(true);
+    const audioPlays = await page.evaluate(() => window.__audioPlays);
+    const playingFrame = Number(await viewer().getByRole('slider', { name: '动作时间轴' }).inputValue());
+    await viewer().getByLabel('地面网格').check();
+    await viewer().getByLabel('地面阴影').uncheck();
+    await expect.poll(async () => Number(await viewer().getByRole('slider', { name: '动作时间轴' }).inputValue())).toBeGreaterThan(playingFrame);
+    expect(await page.evaluate(() => window.__audioPlays)).toBe(audioPlays);
+    await viewer().getByLabel('地面网格').uncheck();
+    await viewer().getByLabel('地面阴影').check();
     await viewer().getByRole('button', { name: '暂停动作', exact: true }).click();
     await viewer().getByLabel('音乐', { exact: true }).selectOption('');
     await expect(viewer().locator('.asset-error')).toHaveCount(0);
@@ -160,8 +271,16 @@ async function launch(environment = env) {
     await page.getByRole('textbox', { name: '语义搜索' }).fill('motion');
     await page.getByRole('textbox', { name: '语义搜索' }).press('Enter');
     await expect(page.locator('.asset-card')).toHaveCount(1);
+    await page.getByRole('button', { name: '退出搜索', exact: true }).click();
+    await openModel();
+    await expect(modelViewer().getByLabel('地面网格')).not.toBeChecked();
+    await expect(modelViewer().getByLabel('地面阴影')).toBeChecked();
+    await expect(modelViewer().getByRole('button', { name: '复位视角' })).toBeInViewport();
+    await shot('prism-shared-model-small.png');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.preview-canvas canvas')).toHaveCount(0);
     expect(errors).toEqual([]);
-    console.log('MOTION_UI_OK: no-model built-in preview/fallback/grid, remembered selection, automatic package grouping/count/search/navigation/keyboard, 3 PMX characters, playback/step/loop/rate, facial/camera/audio/docs, themes/minimum size, cleanup; artifacts', output);
+    console.log('MOTION_UI_OK: shared model/motion stage, grid/shadow pixels and bidirectional preferences, retained camera/time/canvas/audio, wireframe/material isolation/reset, no-model built-in preview/fallback, remembered selection, automatic packages, 3 PMX characters, playback/step/loop/rate, facial/camera/audio/docs, themes/minimum size, cleanup; artifacts', output);
   } catch (error) {
     if (page && !page.isClosed()) {
       await shot('prism-motion-failure.png').catch(() => {});

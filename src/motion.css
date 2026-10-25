@@ -1,13 +1,4 @@
-.motion-dialog{position:relative;display:flex;flex-direction:column;width:min(1280px,96vw);height:min(870px,92vh);background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;box-shadow:var(--shadow)}
-.motion-dialog>header{display:flex;align-items:center;gap:12px;padding:14px 20px;border-bottom:1px solid var(--line);flex-shrink:0}
-.motion-dialog>header>div{display:flex;align-items:baseline;gap:14px;min-width:0}
-.motion-dialog>header strong{font-size:14px}.motion-dialog>header span{font-size:11px;color:var(--muted)}
-.motion-dialog>header>button{margin-left:auto}
 .motion-workspace{display:flex;flex:1;min-height:0}
-.motion-stage{position:relative;flex:1;min-width:0;background:var(--stage);overflow:hidden}
-.motion-stage>canvas{display:block;width:100%;height:100%}
-.motion-loading{position:absolute;inset:0;display:grid;place-items:center;background:var(--stage);z-index:2}
-.motion-loading .library-state{padding:28px;max-width:480px}.motion-loading h2{font-size:14px}
 .motion-stage-label{position:absolute;top:18px;left:20px;font-size:11px;color:var(--text-secondary);pointer-events:none}
 .motion-stage-label span{display:block;color:var(--muted);margin-top:6px;font-size:10px}
 .motion-options{width:264px;flex-shrink:0;border-left:1px solid var(--line);overflow-y:auto;padding:18px 16px;scrollbar-gutter:stable}

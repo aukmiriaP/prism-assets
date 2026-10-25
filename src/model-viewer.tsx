@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { Box, FolderOpen, LoaderCircle, RotateCcw, X } from 'lucide-react';
+import { Box, FolderOpen, RotateCcw, X } from 'lucide-react';
 import type { Asset, Connection, ModelResource } from './types';
 import { configureModelMaterials } from './model-materials';
+import { createPreviewStage } from './preview-stage';
+import { PreviewCanvas, PreviewDialog, PreviewEnvironment, PreviewLoading } from './preview';
 import './model.css';
 
 export function ModelViewer({ asset, connection, close }: { asset: Asset; connection: Connection; close: () => void }) {
@@ -18,43 +19,13 @@ export function ModelViewer({ asset, connection, close }: { asset: Asset; connec
   useEffect(() => {
     if (!mount.current) return;
     setError(''); setLoading(true);
-    const holder = mount.current;
-    let renderer: THREE.WebGLRenderer;
+    let preview: ReturnType<typeof createPreviewStage>;
     try {
-      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+      preview = createPreviewStage(mount.current);
     } catch {
       setError('无法启动 3D 预览，请检查系统图形支持。'); setLoading(false); return;
     }
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 1.35;
-    holder.appendChild(renderer.domElement);
-    const scene = new THREE.Scene();
-    scene.add(new THREE.HemisphereLight(0xffffff, 0x7d8592, 3));
-    const key = new THREE.DirectionalLight(0xffffff, 3);
-    key.position.set(3, 5, 4); scene.add(key);
-    const fill = new THREE.DirectionalLight(0xcedaff, 2);
-    fill.position.set(-3, 2, -4); scene.add(fill);
-    const camera = new THREE.PerspectiveCamera(38, 1, .01, 100);
-    const controls = new OrbitControls(camera, renderer.domElement);
-    controls.enableDamping = true; controls.minDistance = .4; controls.maxDistance = 15;
-    reset.current = () => { camera.position.set(.7, .35, 4.2); controls.target.set(0, 0, 0); controls.update(); };
-    reset.current();
-    const grid = new THREE.GridHelper(6, 24, 0x626875, 0x373d48);
-    grid.position.y = -1.04; scene.add(grid);
-    const updateAppearance = () => {
-      const style = getComputedStyle(document.documentElement);
-      scene.background = new THREE.Color(style.getPropertyValue('--stage').trim());
-      const themedGrid = new THREE.GridHelper(6, 24,
-        style.getPropertyValue('--stage-axis').trim(), style.getPropertyValue('--stage-grid').trim());
-      const colors = grid.geometry.getAttribute('color') as THREE.BufferAttribute;
-      colors.copy(themedGrid.geometry.getAttribute('color') as THREE.BufferAttribute);
-      colors.needsUpdate = true;
-      themedGrid.geometry.dispose(); (themedGrid.material as THREE.Material).dispose();
-    };
-    updateAppearance();
-    window.addEventListener('prism-appearance-change', updateAppearance);
+    reset.current = preview.reset;
     let stopped = false;
     const disposeMesh = (mesh: THREE.Mesh) => {
       mesh.geometry.dispose();
@@ -72,21 +43,17 @@ export function ModelViewer({ asset, connection, close }: { asset: Asset; connec
       if (stopped) { gltf.scene.traverse(o => { if (o instanceof THREE.Mesh) disposeMesh(o); }); return; }
       configureModelMaterials(gltf.scene, asset.ext);
       objects.current = [];
-      gltf.scene.traverse(o => { if (o instanceof THREE.Mesh) objects.current.push(o); });
-      scene.add(gltf.scene); setLoading(false);
+      gltf.scene.traverse(o => { if (o instanceof THREE.Mesh) {
+        o.castShadow = true; o.receiveShadow = false; objects.current.push(o);
+      } });
+      preview.scene.add(gltf.scene);
+      preview.frame(new THREE.Box3().setFromObject(gltf.scene));
+      setLoading(false);
     }, undefined, () => { if (!stopped) { setError('模型预览暂不可用，请等待索引完成或在索引任务中重试。'); setLoading(false); } });
-    const observer = new ResizeObserver(() => {
-      camera.aspect = holder.clientWidth / Math.max(holder.clientHeight, 1);
-      camera.updateProjectionMatrix(); renderer.setSize(holder.clientWidth, holder.clientHeight);
-    });
-    observer.observe(holder);
-    renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+    preview.start();
     return () => {
-      window.removeEventListener('prism-appearance-change', updateAppearance);
-      stopped = true; observer.disconnect(); renderer.setAnimationLoop(null); controls.dispose();
+      stopped = true; preview.dispose(); reset.current = () => {};
       objects.current.forEach(disposeMesh); objects.current = [];
-      grid.geometry.dispose(); (grid.material as THREE.Material).dispose();
-      renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
     };
   }, [asset.id, asset.model?.cache, connection]);
   useEffect(() => {
@@ -96,23 +63,21 @@ export function ModelViewer({ asset, connection, close }: { asset: Asset; connec
       mesh.visible = !material || materials.some(m => m.name === material);
     });
   }, [wireframe, material, loading]);
-  return <div className="model-overlay" role="dialog" aria-label="3D 模型预览">
-    <section className="model-dialog">
-      <header><Box size={20}/><strong>{asset.name}</strong><span>{asset.ext.toUpperCase()} · 静态预览</span><button title="关闭预览" onClick={close}><X size={22}/></button></header>
-      <div className="model-canvas" ref={mount} aria-label="可旋转模型画布">
-        {loading && <div className="model-loading"><LoaderCircle className="spin"/> 正在加载模型…</div>}
-        {error && <div className="model-loading">{error}</div>}
-      </div>
+  return <PreviewDialog label="3D 模型预览" title={asset.name} subtitle={`${asset.ext.toUpperCase()} · 静态预览`}
+    icon={<Box size={19}/>} closeLabel="关闭预览" close={close} className="model-dialog">
+      <PreviewCanvas className="model-canvas" mount={mount} aria-label="可旋转模型画布">
+        {(loading || error) && <PreviewLoading className="model-loading" loading={loading} title={error || '正在加载模型…'}/>}
+      </PreviewCanvas>
       <div className="model-toolbar">
-        <button onClick={() => { setMaterial(''); reset.current(); }}><RotateCcw size={14}/> 复位视角</button>
+        <button disabled={loading || !!error} onClick={() => { setMaterial(''); reset.current(); }}><RotateCcw size={14}/> 复位视角</button>
+        <PreviewEnvironment/>
         <label><input type="checkbox" checked={wireframe} onChange={e => setWireframe(e.target.checked)}/>线框</label>
         <select aria-label="隔离材质" value={material} onChange={e => setMaterial(e.target.value)}><option value="">全部材质</option>
           {asset.model?.materials.map((m, i) => <option key={i} value={m.name}>{m.name}</option>)}</select>
         <span>左键旋转 · 滚轮缩放 · 右键平移</span>
       </div>
       <p className="model-caveat">{asset.model?.warnings.join(' ')}</p>
-    </section>
-  </div>;
+  </PreviewDialog>;
 }
 
 export function ModelDetails({ asset, connection }: { asset: Asset; connection: Connection }) {

@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { Activity, FolderOpen, Pause, Play, RotateCcw, SkipBack, SkipForward, X } from 'lucide-react';
 import type { Asset, Connection, Result } from './types';
-import { LibraryState } from './library-state';
+import { createPreviewStage } from './preview-stage';
+import { PreviewCanvas, PreviewDialog, PreviewEnvironment, PreviewLoading } from './preview';
 import { animateMotion, buildMotionMesh, mergeMotion, type Vmd } from './motion-rig';
 import { buildDefaultMotionMesh, DEFAULT_MOTION_MODEL, MOTION_MODEL_STORAGE } from './motion-mannequin';
 import './motion.css';
@@ -31,14 +31,13 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
   const [modelId, setModelId] = useState(''), [bodyId, setBodyId] = useState('');
   const [facialId, setFacialId] = useState(''), [cameraId, setCameraId] = useState(''), [audioId, setAudioId] = useState('');
   const [cameraMode, setCameraMode] = useState(false), [skeleton, setSkeleton] = useState(false);
-  const [showGrid, setShowGrid] = useState(false);
   const [playing, setPlaying] = useState(false), [speed, setSpeed] = useState(1), [loop, setLoop] = useState(true);
   const [time, setTime] = useState(0), [duration, setDuration] = useState(0);
   const [loading, setLoading] = useState(true), [ready, setReady] = useState(false);
   const [error, setError] = useState(''), [audioError, setAudioError] = useState('');
   const [report, setReport] = useState({ matched: 0, total: 0, missing: [] as string[], warnings: [] as string[] });
   const [document, setDocument] = useState<{ name: string; text: string } | null>(null);
-  const clock = useRef({ time: 0, playing: false, speed: 1, loop: true, camera: false, skeleton: false, grid: false });
+  const clock = useRef({ time: 0, playing: false, speed: 1, loop: true, camera: false, skeleton: false });
   const stage = useRef({ seek: (_time: number) => {}, reset: () => {} });
   const audio = useRef<HTMLAudioElement | null>(null);
   const selectedModel = models.find(m => m.id === modelId);
@@ -72,7 +71,11 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
   }, [asset.id]);
 
   useEffect(() => {
-    Object.assign(clock.current, { playing, speed, loop, camera: cameraMode, skeleton, grid: showGrid });
+    Object.assign(clock.current, { camera: cameraMode, skeleton });
+  }, [cameraMode, skeleton]);
+
+  useEffect(() => {
+    Object.assign(clock.current, { playing, speed, loop });
     if (audio.current) {
       audio.current.playbackRate = speed;
       if (!playing) audio.current.pause();
@@ -81,7 +84,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
         audio.current.play().catch(() => setAudioError('音乐未能播放，请关闭音乐后重试。'));
       }
     }
-  }, [playing, speed, loop, cameraMode, skeleton, showGrid]);
+  }, [playing, speed, loop]);
 
   useEffect(() => {
     setAudioError('');
@@ -114,42 +117,13 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
     const holder = mount.current, abort = new AbortController();
     let disposed = false, rig: ReturnType<typeof buildMotionMesh> | undefined;
     let animation: ReturnType<typeof animateMotion> | undefined, bones: THREE.SkeletonHelper | undefined;
-    let renderer: THREE.WebGLRenderer;
+    let preview: ReturnType<typeof createPreviewStage>;
     setLoading(true); setReady(false); setPlaying(false); setError(''); setTime(0); clock.current.time = 0; clock.current.playing = false;
     audio.current?.pause();
-    try { renderer = new THREE.WebGLRenderer({ antialias: true }); }
+    try { preview = createPreviewStage(holder); }
     catch { setError('无法创建 3D 画布，请检查系统图形支持'); setLoading(false); return; }
-    holder.appendChild(renderer.domElement);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); renderer.outputColorSpace = THREE.SRGBColorSpace;
-    renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.1;
-    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    const scene = new THREE.Scene();
-    scene.add(new THREE.HemisphereLight(0xffffff, 0xa7a8b0, 2.6));
-    const key = new THREE.DirectionalLight(0xffffff, 2.5); key.position.set(15, 30, 25); scene.add(key);
-    key.castShadow = true; key.shadow.mapSize.set(1024, 1024); key.shadow.bias = -.0002; key.shadow.normalBias = .04;
-    Object.assign(key.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, near: 1, far: 90 });
-    key.shadow.camera.updateProjectionMatrix();
-    const rim = new THREE.DirectionalLight(0xdbe4ed, 1.3); rim.position.set(-15, 18, -15); scene.add(rim);
-    const ground = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.ShadowMaterial({ opacity: .15 }));
-    ground.rotation.x = -Math.PI / 2; ground.position.y = .01; ground.receiveShadow = true; scene.add(ground);
-    const freeCamera = new THREE.PerspectiveCamera(38, 1, .1, 2000);
+    const { scene } = preview;
     const originalCamera = new THREE.PerspectiveCamera(38, 1, .1, 2000);
-    const controls = new OrbitControls(freeCamera, renderer.domElement);
-    controls.enableDamping = true; controls.minDistance = 2; controls.maxDistance = 150;
-    const grid = new THREE.GridHelper(80, 40, 0x707070, 0x444444); scene.add(grid);
-    const updateAppearance = () => {
-      const style = getComputedStyle(window.document.documentElement);
-      scene.background = new THREE.Color(style.getPropertyValue('--stage').trim());
-      const colors = new THREE.GridHelper(80, 40, style.getPropertyValue('--stage-axis').trim(), style.getPropertyValue('--stage-grid').trim());
-      grid.geometry.setAttribute('color', colors.geometry.getAttribute('color').clone());
-      colors.geometry.dispose(); (colors.material as THREE.Material).dispose();
-    };
-    updateAppearance(); window.addEventListener('prism-appearance-change', updateAppearance);
-    const resize = () => {
-      renderer.setSize(holder.clientWidth, holder.clientHeight);
-      for (const camera of [freeCamera, originalCamera]) { camera.aspect = holder.clientWidth / Math.max(holder.clientHeight, 1); camera.updateProjectionMatrix(); }
-    };
-    const observer = new ResizeObserver(resize); observer.observe(holder); resize();
     const textures = new Set<THREE.Texture>(), bitmaps = new Set<ImageBitmap>();
     let clipDuration = 0;
     const seek = (value: number) => {
@@ -206,22 +180,15 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       }
       if (disposed) return;
       model.mesh.geometry.computeBoundingBox();
-      const bounds = model.mesh.geometry.boundingBox!, center = bounds.getCenter(new THREE.Vector3());
-      const height = Math.max(bounds.max.y - bounds.min.y, 10);
-      stage.current.reset = () => {
-        freeCamera.position.set(center.x, center.y + height * .12, center.z + height * 1.85);
-        controls.target.set(center.x, center.y, center.z); controls.update();
-      };
-      stage.current.reset();
+      preview.frame(model.mesh.geometry.boundingBox!, 0);
+      stage.current.reset = preview.reset;
       bones = new THREE.SkeletonHelper(model.mesh);
       (bones.material as THREE.LineBasicMaterial).depthTest = false; bones.renderOrder = 10; scene.add(bones);
       setDuration(clipDuration); setReport({ matched: animation.matched.length, total: data.info.active_bones.length,
         missing: animation.missing, warnings: [...new Set(warnings)] });
       seek(0); setReady(true); setLoading(false);
     })().catch(e => { if (!disposed) { setError(String(e.message || e)); setLoading(false); } });
-    let previous = performance.now();
-    renderer.setAnimationLoop(now => {
-      const elapsed = Math.min((now - previous) / 1000, .15); previous = now;
+    preview.start(elapsed => {
       const state = clock.current;
       if (animation && state.playing) {
         let next = state.time + elapsed * state.speed;
@@ -234,35 +201,27 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
         seek(next);
       }
       if (bones) bones.visible = state.skeleton && Boolean(rig?.mesh.visible);
-      grid.visible = state.grid;
-      controls.enabled = !(state.camera && cameraId); if (controls.enabled) controls.update();
-      renderer.render(scene, state.camera && cameraId && animation ? originalCamera : freeCamera);
+      return state.camera && cameraId && animation ? originalCamera : undefined;
     });
     return () => {
-      disposed = true; abort.abort(); renderer.setAnimationLoop(null); observer.disconnect(); controls.dispose();
-      window.removeEventListener('prism-appearance-change', updateAppearance);
+      disposed = true; abort.abort(); preview.dispose();
       stage.current = { seek: () => {}, reset: () => {} };
       animation?.dispose();
       if (rig) { rig.mesh.skeleton.dispose(); rig.mesh.geometry.dispose(); rig.materials.forEach(m => m.dispose()); }
       if (bones) { bones.geometry.dispose(); (bones.material as THREE.Material).dispose(); }
       textures.forEach(t => t.dispose()); bitmaps.forEach(b => b.close());
-      grid.geometry.dispose(); (grid.material as THREE.Material).dispose();
-      ground.geometry.dispose(); ground.material.dispose(); key.shadow.dispose();
-      renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
     };
   }, [modelId, bodyId, facialId, cameraId, connection]);
 
   const toggle = () => { if (!playing && time >= duration) stage.current.seek(0); setPlaying(v => !v); };
   const step = (delta: number) => { setPlaying(false); clock.current.playing = false; stage.current.seek((Math.round(clock.current.time * 30) + delta) / 30); };
-  return <div className="model-overlay" role="dialog" aria-label="人形动作预览">
-    <section className="motion-dialog">
-      <header><Activity size={19}/><div><strong>{asset.path.split('/').slice(-2, -1)[0]}</strong><span>{asset.name} · MMD 人形动作</span></div>
-        <button title="关闭动作预览" onClick={close}><X size={21}/></button></header>
+  return <PreviewDialog label="人形动作预览" title={asset.path.split('/').slice(-2, -1)[0]} subtitle={`${asset.name} · MMD 人形动作`}
+    icon={<Activity size={19}/>} closeLabel="关闭动作预览" close={close} className="motion-dialog">
       <div className="motion-workspace">
-        <div className="motion-stage" ref={mount} data-ready={ready} data-model={modelId} aria-label="人形动作画布">
-          {(loading || error) && <div className="motion-loading"><LibraryState loading={loading} title={error || '正在加载角色与动作…'} description={loading ? '读取本地骨架、蒙皮与贴图' : undefined}/></div>}
+        <PreviewCanvas className="motion-stage" mount={mount} data-ready={ready} data-model={modelId} aria-label="人形动作画布">
+          {(loading || error) && <PreviewLoading className="motion-loading" loading={loading} title={error || '正在加载角色与动作…'} description={loading ? '读取本地骨架、蒙皮与贴图' : undefined}/>}
           {ready && <div className="motion-stage-label">{cameraMode && cameraId ? '原始镜头' : '自由机位'}<span>{report.matched} / {report.total} 有效骨骼匹配</span></div>}
-        </div>
+        </PreviewCanvas>
         <aside className="motion-options">
           <label>预览角色<select aria-label="预览角色" value={modelId} onChange={e => selectModel(e.target.value)}>
             <option value={DEFAULT_MOTION_MODEL}>Prism 人形 · 内置</option>{models.map(m => <option key={m.id} value={m.id}>{m.name.replace(/\.pmx$/i, '')}</option>)}</select></label>
@@ -279,7 +238,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
           {audioError && <p className="asset-error">{audioError}</p>}
           <div className="motion-options-actions"><label className="motion-check"><input type="checkbox" checked={skeleton} onChange={e => setSkeleton(e.target.checked)}/>骨架叠加</label>
             <button disabled={!ready} onClick={() => { setCameraMode(false); stage.current.reset(); }}><RotateCcw size={13}/>复位视角</button></div>
-          <label className="motion-check"><input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)}/>地面网格</label>
+          <PreviewEnvironment/>
           <p>自由机位：拖动旋转，滚轮缩放，右键平移。</p>
           <details><summary>预览范围与匹配详情</summary>
             <p>基础材质、蒙皮、骨骼 IK 与旋转继承。暂不模拟头发、衣裙物理与 MMD 特效；骨骼、UV 和材质变形不完整支持。</p>
@@ -301,6 +260,5 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
           <label><input type="checkbox" checked={loop} onChange={e => setLoop(e.target.checked)}/>循环</label><span>30 FPS 时间基</span></div>
       </footer>
       {document && <div className="motion-document" role="dialog" aria-label="动作使用说明"><header><strong>{document.name}</strong><button title="关闭说明" onClick={() => setDocument(null)}><X size={18}/></button></header><pre>{document.text}</pre></div>}
-    </section>
-  </div>;
+  </PreviewDialog>;
 }

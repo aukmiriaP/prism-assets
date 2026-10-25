@@ -1,5 +1,6 @@
 """Read-only snapshot of locally indexed character fixtures into an isolated test DB."""
 from pathlib import Path
+import json
 import os
 import shutil
 import sqlite3
@@ -29,5 +30,10 @@ for row in db.execute("SELECT thumbnail FROM assets WHERE thumbnail IS NOT NULL"
     image = source / "thumbnails" / row[0]
     if image.exists():
         shutil.copyfile(image, output / "thumbnails" / row[0])
+for row in db.execute("SELECT id,model_data FROM assets WHERE kind='model'"):
+    cache = json.loads(row["model_data"])["cache"]
+    relative = Path("models") / row["id"] / cache / "model.glb"
+    (output / relative).parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(source / relative, output / relative)
 print("Isolated character fixture:", db.execute("SELECT count(*) FROM assets WHERE kind='model'").fetchone()[0])
 db.close()
