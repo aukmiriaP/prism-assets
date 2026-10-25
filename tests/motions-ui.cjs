@@ -287,6 +287,22 @@ async function launch(environment = env) {
       await sameCanvas(); expect(assetRequests.length).toBe(physicsRequestCount);
       expect(await page.evaluate(() => window.__physicsWorkers.size)).toBe(1);
       console.log('PHYSICS_UI_OK', id, 'pose changes, deterministic seek/restart, canvas/time retained');
+      // Record neighboring head poses with the authored close camera, then verify
+      // an actual paused frame remains unchanged while the worker fills lookahead.
+      await viewer().getByLabel('使用原始镜头').check();
+      for (const number of [180, 181, 182, 183]) {
+        await frame(number);
+        await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
+        await shot(`prism-head-stable-${id}-${number}.png`);
+      }
+      const pausedHead = await viewer().locator('canvas').screenshot();
+      await page.evaluate(() => new Promise(resolve => {
+        let frames = 0;
+        const next = () => { if (++frames >= 60) resolve(); else requestAnimationFrame(next); };
+        requestAnimationFrame(next);
+      }));
+      expect(pixelDifference(pausedHead, await viewer().locator('canvas').screenshot())).toBeLessThan(.001);
+      await viewer().getByLabel('使用原始镜头').uncheck();
     }
     // Failed initialization must stay playable, and switching off/on must recover without reloading the model.
     await viewer().getByLabel('头发与衣裙物理').uncheck();

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { MMDPhysics } from 'three-stdlib';
 import { animateMotion, createMotionLoader, type Vmd } from './motion-rig';
+import { createHeadPoseStabilizer } from './motion-head-physics';
 
 export const PHYSICS_FPS = 60;
 export type PhysicsRig = {
@@ -42,12 +43,16 @@ export function createPhysicsSimulation(input: PhysicsInput) {
   mesh.updateMatrixWorld(true); mesh.bind(new THREE.Skeleton(bones));
   const physics = new MMDPhysics(mesh, geometry.userData.MMD.rigidBodies, geometry.userData.MMD.constraints,
     { unitStep: 1 / PHYSICS_FPS, maxStepNum: 1 });
+  const headPose = createHeadPoseStabilizer(physics, mesh, 1 / PHYSICS_FPS);
   // Morph/camera evaluation stays on the visible rig. Only skeletal animation drives colliders.
   const animation = animateMotion(mesh, createMotionLoader(), { ...input.motion,
     morphs: [], cameras: [], metadata: { ...input.motion.metadata, morphCount: 0, cameraCount: 0 } });
   animation.sample(0); physics.reset();
   const indices = physicsBoneIndices(input.rig);
-  const step = (time: number) => { animation.sample(time); physics.update(1 / PHYSICS_FPS); };
+  const step = (time: number) => {
+    animation.sample(time); physics.update(1 / PHYSICS_FPS);
+    headPose.apply();
+  };
   const capture = () => {
     const values = new Float32Array(indices.length * 7);
     indices.forEach((index, i) => {
