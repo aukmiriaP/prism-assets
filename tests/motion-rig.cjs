@@ -5,13 +5,13 @@ const assert = require('node:assert/strict');
 const THREE = require('three');
 const root = path.resolve(__dirname, '..'), temp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-rig-'));
 const output = path.join(temp, 'rig.cjs');
-require('esbuild').buildSync({ entryPoints: [path.join(root, 'src/motion-rig.ts')], outfile: output,
+require('esbuild').buildSync({ stdin: { contents: "export * from './src/motion-rig'; export * from './src/motion-mannequin';", resolveDir: root }, outfile: output,
   bundle: true, platform: 'node', format: 'cjs', external: ['three', 'three-stdlib'] });
 // Module lookup for the temporary bundle must use this checkout's dependencies.
 const Module = require('node:module');
 const rigModule = new Module(output, module); rigModule.filename = output; rigModule.paths = module.paths;
 rigModule._compile(fs.readFileSync(output, 'utf8'), output);
-const { buildMotionMesh, animateMotion, mergeMotion } = rigModule.exports;
+const { buildMotionMesh, buildDefaultMotionMesh, animateMotion, mergeMotion } = rigModule.exports;
 const readVmd = name => JSON.parse(execFileSync(path.join(root, '.venv/bin/python'),
   ['-c', 'import json,sys; from motion_assets import read_vmd; print(json.dumps(read_vmd(sys.argv[1])))',
     path.join(root, '../datasets/motion/EX_HAPPY', name)], { cwd: root, maxBuffer: 32 * 1024 ** 2 }));
@@ -25,9 +25,9 @@ const vertexSignature = mesh => Array.from({ length: 40 }, (_, i) => {
   return mesh.getVertexPosition(index, new THREE.Vector3()).toArray();
 }).flat();
 const difference = (a, b) => Math.max(...a.map((v, i) => Math.abs(v - b[i])));
-for (const file of paths) {
-  const buffer = fs.readFileSync(file);
-  const rig = buildMotionMesh(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength));
+for (const file of ['builtin', ...paths]) {
+  const buffer = file === 'builtin' ? null : fs.readFileSync(file);
+  const rig = buffer ? buildMotionMesh(buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength)) : buildDefaultMotionMesh();
   const camera = new THREE.PerspectiveCamera();
   const motion = mergeMotion(body, facial);
   const animation = animateMotion(rig.mesh, rig.loader, motion, camera, cameraData);

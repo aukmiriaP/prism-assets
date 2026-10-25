@@ -27,8 +27,8 @@ async function frame(number) {
   await viewer().getByRole('slider', { name: '动作时间轴' }).fill(String(number));
   await expect(viewer().locator('.motion-playback output')).toContainText(`第 ${number} /`);
 }
-async function launch() {
-  instance = await electron.launch({ args: [path.join(root, 'tests/material-ui-main.cjs')], cwd: root, env, timeout: 60000 });
+async function launch(environment = env) {
+  instance = await electron.launch({ args: [path.join(root, 'tests/material-ui-main.cjs')], cwd: root, env: environment, timeout: 60000 });
   page = await instance.firstWindow();
   page.on('pageerror', e => errors.push(e.message));
   page.on('request', request => { if (/^https?:/.test(request.url()) && !request.url().startsWith('http://127.0.0.1:')) errors.push('external request'); });
@@ -39,6 +39,33 @@ async function launch() {
 }
 (async () => {
   try {
+    // A fresh library with no PMX at all must still render and animate immediately.
+    await launch({ ...env, PRISM_DATA_DIR: path.join(temp, 'motion-only'),
+      PRISM_USER_DATA: path.join(temp, 'motion-only-electron') });
+    const modelRequests = [];
+    page.on('request', request => { if (/\/motion-model|\/motion-textures/.test(request.url())) modelRequests.push(request.url()); });
+    await page.evaluate(async source => window.prism.api('/folders', 'POST', { path: source }), path.join(root, '../datasets/motion'));
+    await expect.poll(async () => page.evaluate(async () => (await window.prism.api('/summary')).motions)).toBe(3);
+    await page.getByRole('button', { name: /^动作\s*\d/ }).click();
+    await page.getByRole('button', { name: '动作包 EX_HAPPY', exact: true }).click();
+    await page.getByRole('button', { name: '素材 motion.vmd', exact: true }).dblclick();
+    await ready();
+    await expect(viewer().getByLabel('预览角色')).toHaveValue('builtin-prism-mannequin');
+    await expect(viewer().getByLabel('预览角色').locator('option')).toHaveCount(1);
+    await expect(viewer().locator('.motion-stage-label')).toContainText('50 / 50');
+    await expect(viewer().getByLabel('地面网格')).not.toBeChecked();
+    await frame(150); await shot('prism-motion-default-light.png');
+    await viewer().getByLabel('地面网格').check();
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => localStorage.setItem('prism.motion-model.v1', 'removed-model-id'));
+    await page.getByRole('button', { name: /设置与帮助/ }).click();
+    await page.getByRole('button', { name: '深色', exact: true }).click();
+    await page.getByRole('button', { name: '关闭设置', exact: true }).click();
+    await page.locator('.inspector-preview').click(); await ready();
+    await expect(viewer().getByLabel('预览角色')).toHaveValue('builtin-prism-mannequin');
+    await frame(120); await shot('prism-motion-default-dark.png');
+    expect(modelRequests).toEqual([]);
+    await instance.close();
     await launch();
     await page.evaluate(async source => window.prism.api('/folders', 'POST', { path: source }), path.join(root, '../datasets/motion'));
     await expect.poll(async () => page.evaluate(async () => (await window.prism.api('/summary')).motions), { timeout: 60000 }).toBe(3);
@@ -119,6 +146,7 @@ async function launch() {
     await page.getByRole('button', { name: '深色', exact: true }).click();
     await page.getByRole('button', { name: '关闭设置', exact: true }).click();
     await page.locator('.inspector-preview').click(); await ready(); await frame(120);
+    await expect(viewer().getByLabel('预览角色')).toHaveValue(modelOptions.at(-1));
     await shot('prism-motion-dark.png');
     await instance.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1040, 680));
     await expect(viewer().getByRole('button', { name: '播放动作', exact: true })).toBeInViewport();
@@ -133,7 +161,7 @@ async function launch() {
     await page.getByRole('textbox', { name: '语义搜索' }).press('Enter');
     await expect(page.locator('.asset-card')).toHaveCount(1);
     expect(errors).toEqual([]);
-    console.log('MOTION_UI_OK: automatic package grouping/count/search/navigation/keyboard, real skinned PMX, 3 characters, playback/step/loop/rate, facial/camera/audio/docs, themes/minimum size, cleanup; artifacts', output);
+    console.log('MOTION_UI_OK: no-model built-in preview/fallback/grid, remembered selection, automatic package grouping/count/search/navigation/keyboard, 3 PMX characters, playback/step/loop/rate, facial/camera/audio/docs, themes/minimum size, cleanup; artifacts', output);
   } catch (error) {
     if (page && !page.isClosed()) {
       await shot('prism-motion-failure.png').catch(() => {});

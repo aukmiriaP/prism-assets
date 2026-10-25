@@ -17,6 +17,7 @@
 .motion-options-actions{display:flex;align-items:center;justify-content:space-between;margin:22px 0 12px;font-size:11px}
 .motion-options button{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-secondary);text-align:left}
 .motion-options p{font-size:10px;color:var(--muted);line-height:1.8;overflow-wrap:anywhere}
+.motion-options .motion-model-note{margin:-5px 0 18px}
 .motion-options details{padding:16px 0;border-bottom:1px solid var(--line)}
 .motion-options summary{font-size:11px;color:var(--text-secondary);cursor:pointer}
 .motion-docs{display:flex;flex-direction:column;gap:11px;padding-top:20px}

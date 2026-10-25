@@ -5,6 +5,7 @@ import { Activity, FolderOpen, Pause, Play, RotateCcw, SkipBack, SkipForward, X 
 import type { Asset, Connection, Result } from './types';
 import { LibraryState } from './library-state';
 import { animateMotion, buildMotionMesh, mergeMotion, type Vmd } from './motion-rig';
+import { buildDefaultMotionMesh, DEFAULT_MOTION_MODEL, MOTION_MODEL_STORAGE } from './motion-mannequin';
 import './motion.css';
 
 export const motionLabel = (asset: Asset) => ({ body: '身体动作', facial: '表情动作', camera: '镜头动作', other: '其他轨道' }[asset.motion?.type || 'other']);
@@ -18,7 +19,7 @@ export function MotionDetails({ asset }: { asset: Asset }) {
   return <div className="detail-section"><h3>{motionLabel(asset)}</h3>
     <div className="model-metrics"><span><b>{motionTime(info.duration)}</b>时长</span><span><b>{info.active_bones.length}</b>有效运动骨骼</span><span><b>{info.fps}</b>时间基 FPS</span></div>
     <p className="organization-description">{info.bone_keys.toLocaleString()} 骨骼关键帧 · {info.morph_keys} 表情关键帧 · {info.camera_keys} 镜头关键帧</p>
-    <p className="organization-description">选择库内已绑定的 PMX 人形角色预览。搜索匹配文件名、目录与标签。</p>
+    <p className="organization-description">直接使用内置人形预览，也可切换库内 PMX 角色。搜索匹配文件名、目录与标签。</p>
     {info.warnings.map(w => <p className="organization-description" key={w}>{w}</p>)}
   </div>;
 }
@@ -30,16 +31,22 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
   const [modelId, setModelId] = useState(''), [bodyId, setBodyId] = useState('');
   const [facialId, setFacialId] = useState(''), [cameraId, setCameraId] = useState(''), [audioId, setAudioId] = useState('');
   const [cameraMode, setCameraMode] = useState(false), [skeleton, setSkeleton] = useState(false);
+  const [showGrid, setShowGrid] = useState(false);
   const [playing, setPlaying] = useState(false), [speed, setSpeed] = useState(1), [loop, setLoop] = useState(true);
   const [time, setTime] = useState(0), [duration, setDuration] = useState(0);
   const [loading, setLoading] = useState(true), [ready, setReady] = useState(false);
   const [error, setError] = useState(''), [audioError, setAudioError] = useState('');
   const [report, setReport] = useState({ matched: 0, total: 0, missing: [] as string[], warnings: [] as string[] });
   const [document, setDocument] = useState<{ name: string; text: string } | null>(null);
-  const clock = useRef({ time: 0, playing: false, speed: 1, loop: true, camera: false, skeleton: false });
+  const clock = useRef({ time: 0, playing: false, speed: 1, loop: true, camera: false, skeleton: false, grid: false });
   const stage = useRef({ seek: (_time: number) => {}, reset: () => {} });
   const audio = useRef<HTMLAudioElement | null>(null);
   const selectedModel = models.find(m => m.id === modelId);
+  const builtin = modelId === DEFAULT_MOTION_MODEL;
+  const selectModel = (id: string) => {
+    setModelId(id);
+    try { localStorage.setItem(MOTION_MODEL_STORAGE, id); } catch { /* Selection works without persistent storage. */ }
+  };
   const request = async (route: string, signal: AbortSignal) => {
     const response = await fetch(connection.base + route, { headers: { Authorization: `Bearer ${connection.token}` }, signal });
     if (!response.ok) throw new Error((await response.json()).detail || '本地文件读取失败');
@@ -53,18 +60,19 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       if (stopped) return;
       candidates.items.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
       setModels(candidates.items); setBundle(companions);
-      setModelId(candidates.items[0]?.id || '');
+      let saved = '';
+      try { saved = localStorage.getItem(MOTION_MODEL_STORAGE) || ''; } catch { /* Use the built-in model. */ }
+      setModelId(candidates.items.some(m => m.id === saved) ? saved : DEFAULT_MOTION_MODEL);
       setBodyId(asset.motion?.type === 'body' ? asset.id : companions.motions.find(m => m.motion?.type === 'body')?.id || asset.id);
       setFacialId(asset.motion?.type === 'facial' ? asset.id : '');
       setCameraId(asset.motion?.type === 'camera' ? asset.id : companions.motions.find(m => m.motion?.type === 'camera')?.id || '');
       setCameraMode(asset.motion?.type === 'camera');
-      if (!candidates.items.length) { setLoading(false); setError('请先关联一个已绑定骨骼的 PMX 人形模型目录，索引完成后重新打开。'); }
     })().catch(e => { if (!stopped) { setError(String(e.message)); setLoading(false); } });
     return () => { stopped = true; };
   }, [asset.id]);
 
   useEffect(() => {
-    Object.assign(clock.current, { playing, speed, loop, camera: cameraMode, skeleton });
+    Object.assign(clock.current, { playing, speed, loop, camera: cameraMode, skeleton, grid: showGrid });
     if (audio.current) {
       audio.current.playbackRate = speed;
       if (!playing) audio.current.pause();
@@ -73,7 +81,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
         audio.current.play().catch(() => setAudioError('音乐未能播放，请关闭音乐后重试。'));
       }
     }
-  }, [playing, speed, loop, cameraMode, skeleton]);
+  }, [playing, speed, loop, cameraMode, skeleton, showGrid]);
 
   useEffect(() => {
     setAudioError('');
@@ -102,7 +110,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
   }, [audioId, asset.id]);
 
   useEffect(() => {
-    if (!mount.current || !selectedModel || !bodyId) return;
+    if (!mount.current || (!builtin && !selectedModel) || !bodyId) return;
     const holder = mount.current, abort = new AbortController();
     let disposed = false, rig: ReturnType<typeof buildMotionMesh> | undefined;
     let animation: ReturnType<typeof animateMotion> | undefined, bones: THREE.SkeletonHelper | undefined;
@@ -114,9 +122,16 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
     holder.appendChild(renderer.domElement);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); renderer.outputColorSpace = THREE.SRGBColorSpace;
     renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.1;
+    renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     const scene = new THREE.Scene();
     scene.add(new THREE.HemisphereLight(0xffffff, 0xa7a8b0, 2.6));
     const key = new THREE.DirectionalLight(0xffffff, 2.5); key.position.set(15, 30, 25); scene.add(key);
+    key.castShadow = true; key.shadow.mapSize.set(1024, 1024); key.shadow.bias = -.0002; key.shadow.normalBias = .04;
+    Object.assign(key.shadow.camera, { left: -22, right: 22, top: 22, bottom: -22, near: 1, far: 90 });
+    key.shadow.camera.updateProjectionMatrix();
+    const rim = new THREE.DirectionalLight(0xdbe4ed, 1.3); rim.position.set(-15, 18, -15); scene.add(rim);
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(100, 100), new THREE.ShadowMaterial({ opacity: .15 }));
+    ground.rotation.x = -Math.PI / 2; ground.position.y = .01; ground.receiveShadow = true; scene.add(ground);
     const freeCamera = new THREE.PerspectiveCamera(38, 1, .1, 2000);
     const originalCamera = new THREE.PerspectiveCamera(38, 1, .1, 2000);
     const controls = new OrbitControls(freeCamera, renderer.domElement);
@@ -147,9 +162,13 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
     };
     stage.current.seek = seek;
     (async () => {
-      const buffer = await (await request(`/assets/${selectedModel.id}/motion-model`, abort.signal)).arrayBuffer();
-      if (disposed) return;
-      rig = buildMotionMesh(buffer); scene.add(rig.mesh);
+      if (builtin) rig = buildDefaultMotionMesh();
+      else {
+        const buffer = await (await request(`/assets/${selectedModel!.id}/motion-model`, abort.signal)).arrayBuffer();
+        if (disposed) return;
+        rig = buildMotionMesh(buffer);
+      }
+      rig.mesh.castShadow = true; rig.mesh.receiveShadow = builtin; scene.add(rig.mesh);
       const model = rig;
       const base = await (await request(`/assets/${bodyId}/motion`, abort.signal)).json() as Vmd;
       const facial = facialId && facialId !== bodyId ? await (await request(`/assets/${facialId}/motion`, abort.signal)).json() as Vmd : undefined;
@@ -160,7 +179,8 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       data.info = { ...data.info, duration: clipDuration };
       animation = animateMotion(model.mesh, model.loader, data, originalCamera, camera);
       const warnings = [...base.info.warnings, ...(facial?.info.warnings || []), ...(camera?.info.warnings || [])];
-      if (animation.missingMorphs.length) warnings.push(`${animation.missingMorphs.length} 个表情名称未匹配：${animation.missingMorphs.join('、')}`);
+      if (builtin) warnings.push('内置人形用于检查身体与手指动作，没有面部表情变形；需要表情时请选择带对应表情的 PMX。');
+      else if (animation.missingMorphs.length) warnings.push(`${animation.missingMorphs.length} 个表情名称未匹配：${animation.missingMorphs.join('、')}`);
       if (!base.motions.length && !facial?.motions.length) warnings.push('当前没有身体轨道，角色保持初始姿态；可选择同包身体动作');
       if (animation.missing.length > data.info.active_bones.length * .2)
         throw new Error(`角色骨架不匹配，无法可靠预览。缺少：${animation.missing.join('、')}`);
@@ -171,10 +191,10 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
         if (!ref) continue;
         if (disposed) return;
         if (loaded.has(ref)) { material.map = loaded.get(ref)!; material.transparent = true; material.needsUpdate = true; continue; }
-        const index = selectedModel.model?.resources.findIndex(r => normalized(r.reference) === normalized(ref) && r.exists) ?? -1;
+        const index = selectedModel?.model?.resources.findIndex(r => normalized(r.reference) === normalized(ref) && r.exists) ?? -1;
         if (index < 0) { warnings.push(`缺失纹理：${ref}`); continue; }
         try {
-          const blob = await (await request(`/assets/${selectedModel.id}/motion-textures/${index}/preview`, abort.signal)).blob();
+          const blob = await (await request(`/assets/${selectedModel!.id}/motion-textures/${index}/preview`, abort.signal)).blob();
           const bitmap = await createImageBitmap(blob);
           if (disposed) { bitmap.close(); return; }
           bitmaps.add(bitmap);
@@ -214,6 +234,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
         seek(next);
       }
       if (bones) bones.visible = state.skeleton && Boolean(rig?.mesh.visible);
+      grid.visible = state.grid;
       controls.enabled = !(state.camera && cameraId); if (controls.enabled) controls.update();
       renderer.render(scene, state.camera && cameraId && animation ? originalCamera : freeCamera);
     });
@@ -226,6 +247,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       if (bones) { bones.geometry.dispose(); (bones.material as THREE.Material).dispose(); }
       textures.forEach(t => t.dispose()); bitmaps.forEach(b => b.close());
       grid.geometry.dispose(); (grid.material as THREE.Material).dispose();
+      ground.geometry.dispose(); ground.material.dispose(); key.shadow.dispose();
       renderer.dispose(); renderer.forceContextLoss(); renderer.domElement.remove();
     };
   }, [modelId, bodyId, facialId, cameraId, connection]);
@@ -237,13 +259,14 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
       <header><Activity size={19}/><div><strong>{asset.path.split('/').slice(-2, -1)[0]}</strong><span>{asset.name} · MMD 人形动作</span></div>
         <button title="关闭动作预览" onClick={close}><X size={21}/></button></header>
       <div className="motion-workspace">
-        <div className="motion-stage" ref={mount} data-ready={ready} aria-label="人形动作画布">
+        <div className="motion-stage" ref={mount} data-ready={ready} data-model={modelId} aria-label="人形动作画布">
           {(loading || error) && <div className="motion-loading"><LibraryState loading={loading} title={error || '正在加载角色与动作…'} description={loading ? '读取本地骨架、蒙皮与贴图' : undefined}/></div>}
           {ready && <div className="motion-stage-label">{cameraMode && cameraId ? '原始镜头' : '自由机位'}<span>{report.matched} / {report.total} 有效骨骼匹配</span></div>}
         </div>
         <aside className="motion-options">
-          <label>预览角色<select aria-label="预览角色" value={modelId} onChange={e => setModelId(e.target.value)}>
-            {!models.length && <option value="">需要已索引的 PMX 模型</option>}{models.map(m => <option key={m.id} value={m.id}>{m.name.replace(/\.pmx$/i, '')}</option>)}</select></label>
+          <label>预览角色<select aria-label="预览角色" value={modelId} onChange={e => selectModel(e.target.value)}>
+            <option value={DEFAULT_MOTION_MODEL}>Prism 人形 · 内置</option>{models.map(m => <option key={m.id} value={m.id}>{m.name.replace(/\.pmx$/i, '')}</option>)}</select></label>
+          <p className="motion-model-note">{builtin ? '内置人形用于身体动作；面部表情请切换 PMX。' : '使用角色自身的骨架与材质。'}角色选择自动记住。</p>
           <label>身体动作<select aria-label="身体动作" value={bodyId} onChange={e => setBodyId(e.target.value)}>
             {bundle.motions.filter(m => m.motion?.type === 'body' || m.id === bodyId).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}</select></label>
           <label>追加表情<select aria-label="追加表情" value={facialId} onChange={e => setFacialId(e.target.value)}><option value="">仅使用动作自带表情</option>
@@ -256,6 +279,7 @@ export function MotionViewer({ asset, connection, close }: { asset: Asset; conne
           {audioError && <p className="asset-error">{audioError}</p>}
           <div className="motion-options-actions"><label className="motion-check"><input type="checkbox" checked={skeleton} onChange={e => setSkeleton(e.target.checked)}/>骨架叠加</label>
             <button disabled={!ready} onClick={() => { setCameraMode(false); stage.current.reset(); }}><RotateCcw size={13}/>复位视角</button></div>
+          <label className="motion-check"><input type="checkbox" checked={showGrid} onChange={e => setShowGrid(e.target.checked)}/>地面网格</label>
           <p>自由机位：拖动旋转，滚轮缩放，右键平移。</p>
           <details><summary>预览范围与匹配详情</summary>
             <p>基础材质、蒙皮、骨骼 IK 与旋转继承。暂不模拟头发、衣裙物理与 MMD 特效；骨骼、UV 和材质变形不完整支持。</p>

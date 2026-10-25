@@ -25,8 +25,10 @@ type SeekHelper = MMDAnimationHelper & {
   objects: WeakMap<THREE.Object3D, { mixer: THREE.AnimationMixer }>;
 };
 
+export const createMotionLoader = () => new MMDLoader() as unknown as LoaderInternals;
+
 export function buildMotionMesh(buffer: ArrayBuffer) {
-  const loader = new MMDLoader() as unknown as LoaderInternals;
+  const loader = createMotionLoader();
   const data = loader._getParser().parsePmx(buffer, true);
   const materials: THREE.MeshStandardMaterial[] = [];
   loader.meshBuilder.materialBuilder.build = () => {
