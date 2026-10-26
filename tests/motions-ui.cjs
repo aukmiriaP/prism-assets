@@ -21,6 +21,27 @@ print(np.mean(np.max(np.abs(a-b),axis=2)>8))
 }
 const viewer = () => page.getByRole('dialog', { name: '人形动作预览', exact: true });
 const modelViewer = () => page.getByRole('dialog', { name: '3D 模型预览', exact: true });
+async function canvasShot(locator = viewer().locator('canvas')) {
+  // Use Electron's compositor directly; WebGL frame capture can stall through
+  // Playwright's page/element screenshot path after OrbitControls interaction.
+  await instance.evaluate(({ BrowserWindow }) => {
+    const win = BrowserWindow.getAllWindows()[0]; win.show(); win.focus(); win.setSize(1440, 940);
+  });
+  // React state and Three.js render must reach the compositor before capture.
+  await page.evaluate(() => new Promise(resolve => {
+    let frames = 0;
+    const next = () => { if (++frames >= 4) resolve(); else requestAnimationFrame(next); };
+    requestAnimationFrame(next);
+  }));
+  const clip = await locator.boundingBox();
+  expect(clip).not.toBeNull();
+  const rectangle = Object.fromEntries(Object.entries(clip).map(([key, value]) => [key, Math.round(value)]));
+  const encoded = await instance.evaluate(async ({ BrowserWindow }, rectangle) => {
+    const win = BrowserWindow.getAllWindows()[0];
+    return (await win.webContents.capturePage(rectangle, { stayAwake: true })).toPNG().toString('base64');
+  }, rectangle);
+  return Buffer.from(encoded, 'base64');
+}
 async function openModel() {
   await page.getByRole('button', { name: /^3D 模型/ }).click();
   await page.getByRole('button', { name: '模型分组 鸣潮_锁暝1.0.pmx', exact: true }).click();
@@ -121,12 +142,12 @@ async function launch(environment = env) {
     await expect(modelViewer().getByLabel('地面阴影')).toBeChecked();
     await shot('prism-shared-model-light.png');
     const staticCanvas = modelViewer().locator('canvas');
-    const litModel = await staticCanvas.screenshot();
+    const litModel = await canvasShot(staticCanvas);
     const requestCount = assetRequests.length;
     await modelViewer().getByLabel('地面阴影').uncheck();
-    expect(pixelDifference(litModel, await staticCanvas.screenshot())).toBeGreaterThan(.001);
+    expect(pixelDifference(litModel, await canvasShot(staticCanvas))).toBeGreaterThan(.001);
     await modelViewer().getByLabel('地面阴影').check();
-    await expect.poll(async () => pixelDifference(litModel, await staticCanvas.screenshot())).toBeLessThan(.001);
+    await expect.poll(async () => pixelDifference(litModel, await canvasShot(staticCanvas))).toBeLessThan(.001);
     const box = await staticCanvas.boundingBox();
     await page.mouse.move(box.x + box.width * .45, box.y + box.height * .5);
     await page.mouse.down(); await page.mouse.move(box.x + box.width * .65, box.y + box.height * .5, { steps: 15 }); await page.mouse.up();
@@ -136,18 +157,18 @@ async function launch(environment = env) {
       const step = () => { if (++frames >= 320) resolve(); else requestAnimationFrame(step); };
       requestAnimationFrame(step);
     }));
-    const rotated = await staticCanvas.screenshot();
+    const rotated = await canvasShot(staticCanvas);
     expect(pixelDifference(litModel, rotated)).toBeGreaterThan(.01);
     await modelViewer().getByLabel('地面网格').check();
-    expect(pixelDifference(rotated, await staticCanvas.screenshot())).toBeGreaterThan(.001);
+    expect(pixelDifference(rotated, await canvasShot(staticCanvas))).toBeGreaterThan(.001);
     await modelViewer().getByLabel('地面网格').uncheck();
     // Permit subpixel/alpha-hash edge noise while detecting a changed camera or environment.
-    await expect.poll(async () => pixelDifference(rotated, await staticCanvas.screenshot())).toBeLessThan(.001);
+    await expect.poll(async () => pixelDifference(rotated, await canvasShot(staticCanvas))).toBeLessThan(.001);
     await modelViewer().getByLabel('线框', { exact: true }).check();
-    const wireframe = await staticCanvas.screenshot();
+    const wireframe = await canvasShot(staticCanvas);
     expect(pixelDifference(rotated, wireframe)).toBeGreaterThan(.001);
     await modelViewer().getByLabel('隔离材质').selectOption({ index: 1 });
-    expect(pixelDifference(wireframe, await staticCanvas.screenshot())).toBeGreaterThan(.001);
+    expect(pixelDifference(wireframe, await canvasShot(staticCanvas))).toBeGreaterThan(.001);
     await changeTheme('dark'); await sameCanvas();
     await expect(modelViewer().getByLabel('线框', { exact: true })).toBeChecked();
     await expect(modelViewer().getByLabel('隔离材质')).not.toHaveValue('');
@@ -156,7 +177,7 @@ async function launch(environment = env) {
     await expect(modelViewer().getByLabel('隔离材质')).toHaveValue('');
     await shot('prism-shared-model-dark.png');
     await changeTheme('light');
-    await expect.poll(async () => pixelDifference(litModel, await staticCanvas.screenshot())).toBeLessThan(.001);
+    await expect.poll(async () => pixelDifference(litModel, await canvasShot(staticCanvas))).toBeLessThan(.001);
     await sameCanvas(); expect(assetRequests.length).toBe(requestCount);
     // Preferences made in a model preview must carry into a newly opened motion preview.
     await modelViewer().getByLabel('地面网格').check();
@@ -197,21 +218,21 @@ async function launch(environment = env) {
     await frame(150);
     await rememberCanvas();
     const motionRequestCount = assetRequests.length;
-    const gridFrame = await viewer().locator('canvas').screenshot();
+    const gridFrame = await canvasShot();
     await viewer().getByLabel('地面网格').uncheck();
-    expect(Buffer.compare(gridFrame, await viewer().locator('canvas').screenshot())).not.toBe(0);
-    const noShadow = await viewer().locator('canvas').screenshot();
+    expect(Buffer.compare(gridFrame, await canvasShot())).not.toBe(0);
+    const noShadow = await canvasShot();
     await viewer().getByLabel('地面阴影').check();
-    expect(Buffer.compare(noShadow, await viewer().locator('canvas').screenshot())).not.toBe(0);
+    expect(Buffer.compare(noShadow, await canvasShot())).not.toBe(0);
     await expect(viewer().getByRole('slider', { name: '动作时间轴' })).toHaveValue('150');
     await changeTheme('dark'); await sameCanvas();
     await expect(viewer().getByRole('slider', { name: '动作时间轴' })).toHaveValue('150');
     await changeTheme('light');
     await sameCanvas(); expect(assetRequests.length).toBe(motionRequestCount);
     await shot('prism-motion-light.png');
-    const imageAt150 = await viewer().locator('canvas').screenshot();
+    const imageAt150 = await canvasShot();
     await frame(300);
-    expect(Buffer.compare(imageAt150, await viewer().locator('canvas').screenshot())).not.toBe(0);
+    expect(Buffer.compare(imageAt150, await canvasShot())).not.toBe(0);
     await viewer().getByRole('button', { name: '下一帧', exact: true }).click();
     await expect(viewer().locator('.motion-playback output')).toContainText('第 301 /');
     await viewer().getByRole('button', { name: '上一帧', exact: true }).click();
@@ -269,21 +290,21 @@ async function launch(environment = env) {
       await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
       await rememberCanvas();
       const physicsRequestCount = assetRequests.length;
-      const withPhysics = await viewer().locator('canvas').screenshot();
+      const withPhysics = await canvasShot();
       await frame(300); await frame(0); await frame(150);
       await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
-      await expect.poll(async () => pixelDifference(withPhysics, await viewer().locator('canvas').screenshot())).toBeLessThan(.001);
+      await expect.poll(async () => pixelDifference(withPhysics, await canvasShot())).toBeLessThan(.001);
       await shot(`prism-motion-physics-on-${id}.png`);
       await viewer().getByLabel('头发与衣裙物理').uncheck();
       await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'off');
       await sameCanvas();
       await expect(viewer().getByRole('slider', { name: '动作时间轴' })).toHaveValue('150');
-      expect(pixelDifference(withPhysics, await viewer().locator('canvas').screenshot())).toBeGreaterThan(.001);
+      expect(pixelDifference(withPhysics, await canvasShot())).toBeGreaterThan(.001);
       await shot(`prism-motion-physics-off-${id}.png`);
       expect(await page.evaluate(() => window.__physicsWorkers.size)).toBe(0);
       await viewer().getByLabel('头发与衣裙物理').check();
       await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
-      await expect.poll(async () => pixelDifference(withPhysics, await viewer().locator('canvas').screenshot())).toBeLessThan(.001);
+      await expect.poll(async () => pixelDifference(withPhysics, await canvasShot())).toBeLessThan(.001);
       await sameCanvas(); expect(assetRequests.length).toBe(physicsRequestCount);
       expect(await page.evaluate(() => window.__physicsWorkers.size)).toBe(1);
       console.log('PHYSICS_UI_OK', id, 'pose changes, deterministic seek/restart, canvas/time retained');
@@ -295,14 +316,26 @@ async function launch(environment = env) {
         await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
         await shot(`prism-head-stable-${id}-${number}.png`);
       }
-      const pausedHead = await viewer().locator('canvas').screenshot();
+      const pausedHead = await canvasShot();
       await page.evaluate(() => new Promise(resolve => {
         let frames = 0;
         const next = () => { if (++frames >= 60) resolve(); else requestAnimationFrame(next); };
         requestAnimationFrame(next);
       }));
-      expect(pixelDifference(pausedHead, await viewer().locator('canvas').screenshot())).toBeLessThan(.001);
+      expect(pixelDifference(pausedHead, await canvasShot())).toBeLessThan(.001);
       await viewer().getByLabel('使用原始镜头').uncheck();
+      await frame(360);
+      await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
+      const lateFrame = await canvasShot();
+      await shot(`prism-garment-late-${id}.png`);
+      await viewer().getByRole('button', { name: '播放动作', exact: true }).click();
+      await expect.poll(async () => Number(await viewer().getByLabel('动作时间轴').inputValue())).toBeGreaterThan(375);
+      await viewer().getByRole('button', { name: '暂停动作', exact: true }).click();
+      expect(pixelDifference(lateFrame, await canvasShot())).toBeGreaterThan(.001);
+      await frame(360); await frame(450); await frame(360);
+      await expect(viewer().locator('.motion-stage')).toHaveAttribute('data-physics', 'ready', { timeout: 30000 });
+      await expect.poll(async () => pixelDifference(lateFrame, await canvasShot())).toBeLessThan(.001);
+      await sameCanvas();
     }
     // Failed initialization must stay playable, and switching off/on must recover without reloading the model.
     await viewer().getByLabel('头发与衣裙物理').uncheck();

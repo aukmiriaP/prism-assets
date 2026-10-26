@@ -2,8 +2,14 @@ import * as THREE from 'three';
 import { MMDPhysics } from 'three-stdlib';
 import { animateMotion, createMotionLoader, type Vmd } from './motion-rig';
 import { createHeadPoseStabilizer } from './motion-head-physics';
+import { createGarmentPoseStabilizer } from './motion-garment-physics';
 
 export const PHYSICS_FPS = 60;
+export function physicsFrame(time: number): number {
+  const frame = time * PHYSICS_FPS, nearest = Math.round(frame);
+  // Exact timeline frames can acquire a tiny rounding error after division by FPS.
+  return Math.abs(frame - nearest) < 1e-6 ? nearest : frame;
+}
 export type PhysicsRig = {
   bones: { name: string; parent: number; position: number[]; quaternion: number[]; scale: number[] }[];
   mmd: Record<string, unknown> & { rigidBodies: { boneIndex: number; type: number }[]; constraints: object[] };
@@ -44,6 +50,7 @@ export function createPhysicsSimulation(input: PhysicsInput) {
   const physics = new MMDPhysics(mesh, geometry.userData.MMD.rigidBodies, geometry.userData.MMD.constraints,
     { unitStep: 1 / PHYSICS_FPS, maxStepNum: 1 });
   const headPose = createHeadPoseStabilizer(physics, mesh, 1 / PHYSICS_FPS);
+  const garmentPose = createGarmentPoseStabilizer(physics, mesh, 1 / PHYSICS_FPS);
   // Morph/camera evaluation stays on the visible rig. Only skeletal animation drives colliders.
   const animation = animateMotion(mesh, createMotionLoader(), { ...input.motion,
     morphs: [], cameras: [], metadata: { ...input.motion.metadata, morphCount: 0, cameraCount: 0 } });
@@ -52,6 +59,7 @@ export function createPhysicsSimulation(input: PhysicsInput) {
   const step = (time: number) => {
     animation.sample(time); physics.update(1 / PHYSICS_FPS);
     headPose.apply();
+    garmentPose.apply();
   };
   const capture = () => {
     const values = new Float32Array(indices.length * 7);
@@ -79,12 +87,12 @@ export class PhysicsPoseCache {
     }
   }
   has(time: number) {
-    const frame = time * PHYSICS_FPS;
+    const frame = physicsFrame(time);
     return this.frames.has(Math.floor(frame)) && this.frames.has(Math.ceil(frame));
   }
   hasFrame(frame: number) { return this.frames.has(frame); }
   apply(mesh: THREE.SkinnedMesh, indices: number[], time: number) {
-    const frame = time * PHYSICS_FPS, lo = Math.floor(frame), hi = Math.ceil(frame);
+    const frame = physicsFrame(time), lo = Math.floor(frame), hi = Math.ceil(frame);
     const a = this.frames.get(lo), b = this.frames.get(hi);
     if (!a || !b) return false;
     const alpha = frame - lo;

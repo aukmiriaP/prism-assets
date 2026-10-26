@@ -1,5 +1,5 @@
 import type { SkinnedMesh } from 'three';
-import { PhysicsPoseCache, physicsBoneIndices, PHYSICS_FPS, type PhysicsInput, type PhysicsResponse } from './motion-physics-core';
+import { PhysicsPoseCache, physicsBoneIndices, physicsFrame, PHYSICS_FPS, type PhysicsInput, type PhysicsResponse } from './motion-physics-core';
 
 export type PhysicsStatus = {
   phase: 'off' | 'unavailable' | 'buffering' | 'ready' | 'error';
@@ -9,7 +9,7 @@ export const idlePhysics = (phase: PhysicsStatus['phase']): PhysicsStatus => ({ 
 
 export function createMotionPhysics(input: PhysicsInput, changed: (status: PhysicsStatus) => void) {
   const indices = physicsBoneIndices(input.rig), cache = new PhysicsPoseCache(indices.length * 7);
-  const lastFrame = Math.ceil(input.motion.info.duration * PHYSICS_FPS);
+  const lastFrame = Math.ceil(physicsFrame(input.motion.info.duration));
   let worker: Worker | undefined, disposed = false, error = '', computed = -1, requested = -1, wanted = 0;
   let watchdog: ReturnType<typeof setTimeout> | undefined;
   let previousStatus = '';
@@ -47,10 +47,10 @@ export function createMotionPhysics(input: PhysicsInput, changed: (status: Physi
     wanted = Math.max(0, Math.min(input.motion.info.duration, time));
     if (disposed || error) return;
     try {
-      const lo = Math.floor(wanted * PHYSICS_FPS);
+      const lo = Math.floor(physicsFrame(wanted));
       // A missing older frame was evicted: recreate the entire world, including velocities and solver state.
       if (!worker || (lo <= computed && !cache.hasFrame(lo))) start();
-      const target = Math.min(lastFrame, Math.ceil(wanted * PHYSICS_FPS) + 30);
+      const target = Math.min(lastFrame, Math.ceil(physicsFrame(wanted)) + 30);
       if (requested !== target) { requested = target; worker!.postMessage({ type: 'target', frame: target }); guard(); }
       notify();
     } catch (e) { fail(e instanceof Error ? e.message : String(e)); }

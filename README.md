@@ -132,9 +132,12 @@ Ammo/Bullet 引擎随应用本地打包，在独立线程中以固定 60 Hz 计�
 开关物理保留视角和当前时间，不重载模型、纹理；物理失败时提示原因并回退到普通动画。
 头发、刘海与发饰增加预览姿态稳定处理：沿头部骨骼链检查 PMX 关节的平移/旋转限制，
 固定关节优先跟随锚点，允许摆动的部分以 40 ms 时间常数平滑。
-该处理只修正显示姿态，不改变原始文件或 Bullet 刚体，衣裙仍使用原求解结果。
+该处理只修正显示姿态，不改变原始文件或 Bullet 刚体。
+衣裙另以 45 ms 时间常数平滑纵向骨骼链，固定腰部连接保持跟随身体；
+动态链保留原求解得到的弯曲，避免把纵向关节全部锁死而令裙摆失去摆动。
+仅使用骨骼父级的关节作为显示锚点，不将裙摆横向环状约束当作父子链。
 它是预览近似，可能减少部分摆动幅度或造成轻微延迟，不等同于完整 MMD 物理；
-头部链上的碰撞接触也可能因姿态修正产生偏差，仍需检查大幅动作与局部穿模。
+头发与衣裙的碰撞接触也可能因姿态修正产生偏差，仍需检查大幅动作与局部穿模。
 动作 PMX 与静态预览采用相同的透明材质深度遮挡处理，减少错误的前后层次显示。
 
 按实际运动轨道显示骨骼匹配率；超过 20% 的有效骨骼缺失时停止预览，
@@ -390,6 +393,7 @@ PRISM_BUNDLE_MODEL=1 npm run package
 | `src/motion-rig.ts`、`src/motion-viewer.tsx` | PMX 蒙皮/IK、确定性时间采样与动作播放器 |
 | `src/motion-physics*.ts` | 本地 Ammo 物理线程、固定步长求解与有界姿态缓存 |
 | `src/motion-head-physics.ts` | 头部关节姿态投影与摆动平滑，保留衣裙求解结果 |
+| `src/motion-garment-physics.ts`、`src/motion-pose-stabilizer.ts` | 衣裙纵向链平滑与固定连接，共用姿态处理 |
 | `material_assets.py`、`material_catalog.py` | PBR 通道识别/转换、目录库集成、版本缓存与导出 |
 | `material_worker.py`、`blender_material.py` | Blender 材质球渲染与共用节点构建 |
 | `src/materials.tsx`、`src/materials.css` | PBR 导入/编辑、交互预览及详情 |

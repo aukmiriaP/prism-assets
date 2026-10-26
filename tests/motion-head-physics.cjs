@@ -28,7 +28,7 @@ async function run() {
   bundle.filename = workerData.bundle; bundle.paths = module.paths;
   bundle._compile(fs.readFileSync(workerData.bundle, 'utf8'), workerData.bundle);
   const { buildMotionMesh, animateMotion, createPhysicsSimulation, serializePhysicsRig, PHYSICS_FPS,
-    createHeadPoseStabilizer } = bundle.exports;
+    createHeadPoseStabilizer, createGarmentPoseStabilizer } = bundle.exports;
   global.Ammo = await require('ammojs3/dist/ammo.wasm.js')({
     wasmBinary: fs.readFileSync(path.join(root, 'node_modules/ammojs3/dist/ammo.wasm.wasm')) });
   const bytes = fs.readFileSync(workerData.file);
@@ -48,9 +48,11 @@ async function run() {
   projector.apply();
   assert.deepEqual(nativeTransforms(), nativeBefore, 'Projecting the head pose must leave native bodies untouched');
   rig.mesh.skeleton.pose(); rig.mesh.updateMatrixWorld(true);
+  // Both worlds use the same garment pass; this test isolates head stabilization.
+  const garment = createGarmentPoseStabilizer(original, rig.mesh, 1 / PHYSICS_FPS);
   const animation = animateMotion(rig.mesh, rig.loader, input.motion);
   animation.sample(0); original.reset();
-  const originalStep = time => { animation.sample(time); original.update(1 / PHYSICS_FPS); };
+  const originalStep = time => { animation.sample(time); original.update(1 / PHYSICS_FPS); garment.apply(); };
   const capture = () => {
     const values = new Float32Array(fixed.indices.length * 7);
     fixed.indices.forEach((i, n) => {
@@ -71,7 +73,7 @@ async function run() {
     assert(after.every(Number.isFinite), `Frame ${n} must have finite head poses`);
     for (let slot = 0; slot < fixed.indices.length; slot++) if (!headSet.has(slot))
       assert.deepEqual(after.slice(slot * 7, slot * 7 + 7), before.slice(slot * 7, slot * 7 + 7),
-        'Head stabilization must not change clothing physics');
+        'Head stabilization must not interfere with the garment pass');
     plain.push(before); stabilized.push(after);
   }
   const baseline = chatter(plain, headSlots), result = chatter(stabilized, headSlots);
@@ -89,7 +91,7 @@ else (async () => {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'prism-head-test-'));
   try {
     const bundle = path.join(temp, 'rig.cjs');
-    require('esbuild').buildSync({ stdin: { contents: "export * from './src/motion-rig'; export * from './src/motion-physics-core'; export * from './src/motion-head-physics';", resolveDir: root },
+    require('esbuild').buildSync({ stdin: { contents: "export * from './src/motion-rig'; export * from './src/motion-physics-core'; export * from './src/motion-head-physics'; export * from './src/motion-garment-physics';", resolveDir: root },
       outfile: bundle, bundle: true, platform: 'node', format: 'cjs', external: ['three', 'three-stdlib'] });
     const motion = JSON.parse(execFileSync(path.join(root, '.venv/bin/python'),
       ['-c', 'import sys,json;from motion_assets import read_vmd;print(json.dumps(read_vmd(sys.argv[1])))',
