@@ -18,6 +18,7 @@ import numpy as np
 from PIL import Image, ImageOps
 from model_assets import MODEL_EXTENSIONS, IMAGE_EXTENSIONS, dependency_stamp, prepare_model, blender_executable
 from search_matching import KeywordMatcher
+from auto_tags import AutoTagCatalog
 from material_catalog import MaterialCatalog
 from motion_catalog import MotionCatalog, MOTION_DIRECTORY_SQL
 from motion_assets import MOTION_EXTENSIONS, MOTION_PROFILE
@@ -70,7 +71,7 @@ class Inference:
                 self.queue.task_done()
 
 
-class Catalog(MotionCatalog, MaterialCatalog):
+class Catalog(MotionCatalog, MaterialCatalog, AutoTagCatalog):
     def __init__(self, root: Path, inference=None, watch=True):
         self.root = root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
@@ -117,6 +118,7 @@ class Catalog(MotionCatalog, MaterialCatalog):
             CREATE INDEX IF NOT EXISTS resource_path ON model_resources(path);
         """)
         self.migrate_collections()
+        self.init_auto_tags()
         # Additive migration: preserve IDs, vectors, tags, favorites and paths.
         for table, column, declaration in [
             ("folders", "exclusions", "TEXT NOT NULL DEFAULT '[]'"),

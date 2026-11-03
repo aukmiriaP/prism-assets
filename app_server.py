@@ -278,6 +278,58 @@ def update_asset(aid: str, body: Metadata):
     return app.state.catalog.update_asset(aid, body.model_dump(exclude_none=True))
 
 
+class TagLabel(BaseModel):
+    label: str = Field(max_length=64)
+    prompt: str = Field(default="", max_length=300)
+
+
+class TagGroup(BaseModel):
+    id: str = Field(max_length=64)
+    name: str = Field(max_length=32)
+    kind: Literal["prompt", "color"] = "prompt"
+    enabled: bool = True
+    threshold: float = 0.6
+    labels: list[TagLabel] = Field(default_factory=list, max_length=40)
+
+
+class VocabularyRequest(BaseModel):
+    groups: list[TagGroup] = Field(max_length=20)
+
+
+@app.get("/tags/vocabulary")
+def tag_vocabulary():
+    return {"groups": app.state.catalog.tag_vocabulary()}
+
+
+@app.post("/tags/vocabulary")
+def save_tag_vocabulary(body: VocabularyRequest):
+    return {"groups": app.state.catalog.save_tag_vocabulary(body.model_dump()["groups"])}
+
+
+@app.delete("/tags/vocabulary")
+def reset_tag_vocabulary():
+    return {"groups": app.state.catalog.reset_tag_vocabulary()}
+
+
+class SuggestRequest(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=1000)
+
+
+@app.post("/tags/suggest")
+def suggest_tags(body: SuggestRequest):
+    return {"suggestions": app.state.catalog.suggest_tags(body.ids)}
+
+
+class DismissRequest(BaseModel):
+    ids: list[str] = Field(min_length=1, max_length=5000)
+    label: str = Field(max_length=64)
+
+
+@app.post("/tags/dismiss")
+def dismiss_tag(body: DismissRequest):
+    return app.state.catalog.dismiss_tag(body.ids, body.label)
+
+
 class MaterialRequest(BaseModel):
     config: dict
 

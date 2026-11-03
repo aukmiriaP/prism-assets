@@ -37,6 +37,9 @@ export type Result = { items: Asset[]; total: number; scope_total?: number; uniq
   collapsed_count?: number; top_k?: number; resource_total?: number; strategy?: SearchStrategy;
   keyword_total?: number; returned_keyword?: number; warning?: string; semantic_available?: boolean };
 export type Connection = { base: string; token: string };
+export type TagSuggestion = { label: string; group: string; score: number; source: 'prompt' | 'examples' | 'prompt+examples' | 'color' };
+export type TagGroup = { id: string; name: string; kind: 'prompt' | 'color'; enabled: boolean; threshold: number;
+  labels: { label: string; prompt: string }[] };
 export type MotionPackage = { name: string; path: string; count: number; types: Record<string, number>; duration: number; errors: number };
 export type MotionInfo = { type: 'body' | 'facial' | 'camera' | 'other'; fps: number; frames: number; duration: number;
   bones: number; active_bones: string[]; bone_keys: number; morph_keys: number; camera_keys: number;

@@ -5,7 +5,7 @@ import { useVirtualizer } from '@tanstack/react-virtual';
 import { Activity, Aperture, ArrowDownUp, ArrowLeft, ArrowRight, Box, Check, ChevronRight, CircleHelp, Copy,
   Folder, FolderOpen, FolderPlus, Grid2X2, HardDrive, Heart, Image as ImageIcon,
   ImagePlus, LoaderCircle, Maximize2, Palette, RefreshCw, Search, Settings2, SlidersHorizontal,
-  Sparkles, Tag, Trash2, TriangleAlert, X } from 'lucide-react';
+  Sparkles, Tag, Tags, Trash2, TriangleAlert, X } from 'lucide-react';
 import type { Asset, Collection, Connection, Folder as FolderType, MaterialInspection, Result, SearchStrategy, Summary } from './types';
 import { CollectionEditor, CollectionTree, ExclusionEditor, orderedCollections } from './organization';
 import { ModelDetails, ModelViewer } from './model-viewer';
@@ -15,10 +15,12 @@ import { listLocation, useNavigation, type BrowseView } from './navigation';
 import { ViewResults } from './view-results';
 import { AppearanceSettings, useAppearance } from './appearance';
 import { LibraryState } from './library-state';
+import { BulkSuggestions, DetailSuggestions, TagVocabularySettings } from './auto-tags';
 import './style.css';
 import './organization.css';
 import './navigation.css';
 import './search.css';
+import './auto-tags.css';
 
 const api = <T,>(route: string, method?: string, body?: unknown) => window.prism.api<T>(route, method, body);
 const bytes = (n: number) => n > 1024 ** 2 ? `${(n / 1024 ** 2).toFixed(1)} MB` : `${Math.round(n / 1024)} KB`;
@@ -28,6 +30,7 @@ const cleanError = (e: unknown) => String(e instanceof Error ? e.message : e).re
 const settingsPages = [
   { id: 'appearance', label: '外观', icon: Palette },
   { id: 'folders', label: '关联目录', icon: Folder },
+  { id: 'tags', label: '自动标签', icon: Tags },
   { id: 'data', label: '本地数据', icon: HardDrive },
   { id: 'help', label: '帮助与关于', icon: CircleHelp },
 ] as const;
@@ -70,6 +73,8 @@ function App() {
   const [bulkTag, setBulkTag] = useState('');
   const [bulkCollection, setBulkCollection] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [suggestOpen, setSuggestOpen] = useState(false);
+  const [suggestEnabled, setSuggestEnabled] = useState(true);
   const [detailCollection, setDetailCollection] = useState('');
   const [organizeBusy, setOrganizeBusy] = useState(false);
   const [retryBusy, setRetryBusy] = useState(false);
@@ -121,6 +126,10 @@ function App() {
   }, []);
   useEffect(() => {
     if (!connection) return;
+    api<{ groups: { enabled: boolean }[] }>('/tags/vocabulary').then(d => setSuggestEnabled(d.groups.some(g => g.enabled))).catch(() => {});
+  }, [connection]);
+  useEffect(() => {
+    if (!connection) return;
     let stopped = false;
     const poll = async () => {
       try { const value = await api<Summary>('/summary'); if (!stopped) setSummary(value); }
@@ -163,6 +172,7 @@ function App() {
   }, [connection, summary]);
   useEffect(() => { virtual.measure(); }, [cellSize, columns]);
   useEffect(() => { setChecked([]); anchor.current = null; }, [scope, activeTag, query, filters, groupDuplicates, topK, modelGroup, resourceRelation]);
+  useEffect(() => { if (!multiMode || !checked.length) setSuggestOpen(false); }, [multiMode, checked.length]);
   useEffect(() => { setCopies(null); setTagDraft(''); setDetailCollection(''); }, [selected?.id]);
   useEffect(() => {
     if (busy || restoreScroll.current === null) return;
@@ -555,6 +565,7 @@ function App() {
           <input aria-label="批量标签" placeholder="或输入新标签…" value={bulkTag} maxLength={64} onChange={e => setBulkTag(e.target.value)}/>
           <button disabled={!checkedIds.length || !bulkTag.trim() || busy || bulkBusy} onClick={() => bulk({ add_tags: [bulkTag.trim()] })}>添加标签</button>
           <button disabled={!checkedIds.length || !bulkTag.trim() || busy || bulkBusy} onClick={() => bulk({ remove_tags: [bulkTag.trim()] })}>移除标签</button>
+          <button disabled={!checkedAssets.length || busy || bulkBusy} aria-expanded={suggestOpen} onClick={() => setSuggestOpen(o => !o)}><Sparkles size={11}/> 建议标签</button>
           </div><div className="bulk-action-group" aria-label="批量收藏操作"><span className="action-group-label">收藏</span>
           <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ favorite: true })}>批量收藏</button>
           <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ favorite: false })}>取消收藏</button>
@@ -569,6 +580,9 @@ function App() {
           {collection && <button disabled={!checkedIds.length || busy || bulkBusy} onClick={() => bulk({ collection_id: collection.id, collection_action: 'remove' })}>移出当前集合</button>}
           </div>
         </div>
+        {suggestOpen && <BulkSuggestions items={checkedAssets} close={() => setSuggestOpen(false)} done={async text => {
+          resultCache.current.clear(); notify(text); await loadSummary(); setRefresh(n => n + 1);
+        }}/>}
       </div>}
       <div className="content-row">
         <main className="gallery" ref={scrollRef} aria-label="素材网格">
@@ -669,6 +683,9 @@ function App() {
               else notify('此文件不在当前结果范围内，请切换到全部素材后选择');
             }}>批量整理此项</button></div>
           <div className="detail-section"><h3><Tag size={13}/> 标签</h3><div className="asset-tags">{selected.tags.map(t => <span key={t}>{t}<button title={`删除标签 ${t}`} onClick={() => run(() => patch(selected, { tags: selected.tags.filter(x => x !== t) }))}><X size={11}/></button></span>)}</div>
+            {!selected.motion_package && <DetailSuggestions asset={selected} enabled={suggestEnabled && selected.status !== 'missing'} accept={async tags => {
+              await patch(selected, { tags: [...new Set([...selected.tags, ...tags])] }); notify(`已采纳 ${tags.join('、')}`);
+            }}/>}
             <form onSubmit={e => { e.preventDefault(); applyDetailTag(); }}>
               <select aria-label="详情已有标签" disabled={organizeBusy} value={summary.tags.some(t => t.name === tagDraft) ? tagDraft : ''} onChange={e => setTagDraft(e.target.value)}>
                 <option value="">选择已有标签…</option>{summary.tags.map(t => <option key={t.name} value={t.name}>{t.name}{selected.tags.includes(t.name) ? '（已应用）' : ''}</option>)}</select>
@@ -718,6 +735,7 @@ function App() {
               : <p className="settings-empty">还没有关联目录。添加素材文件夹后，会在这里显示。</p>}
             <button className="add-folder inline" onClick={addFolder}><FolderPlus size={16}/> 关联文件夹</button>
           </>}
+          {settingsPage === 'tags' && <TagVocabularySettings changed={groups => setSuggestEnabled(groups.some(g => g.enabled))}/>}
           {settingsPage === 'data' && <>
             <div className="settings-page-heading"><h3>本地数据</h3><p>索引、标签、收藏和缩略图都保存在本机。</p></div>
             <button className="data-path" title="在 Finder 中显示数据目录" onClick={() => window.prism.reveal(summary.data_dir)}><span>{summary.data_dir}</span><FolderOpen size={16}/></button>

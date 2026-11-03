@@ -107,7 +107,7 @@ async function contrastCheck() {
     await page.evaluate(() => { window.__appearanceImage = document.querySelector('.inspector-preview img'); });
     await openSettings();
     await expect(page.getByRole('tablist', { name: '设置分类' })).toHaveAttribute('aria-orientation', 'vertical');
-    await expect(page.getByRole('tab')).toHaveCount(4);
+    await expect(page.getByRole('tab')).toHaveCount(5);
     await expect(page.getByRole('tab', { name: '外观', exact: true })).toHaveAttribute('aria-selected', 'true');
     await instance.evaluate(() => { global.__appearanceRequests = []; });
     await expect(page.getByRole('button', { name: '浅色', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -132,7 +132,7 @@ async function contrastCheck() {
         await contrastCheck();
       }
     }
-    for (const category of ['关联目录', '本地数据', '帮助与关于', '外观']) {
+    for (const category of ['关联目录', '自动标签', '本地数据', '帮助与关于', '外观']) {
       await page.getByRole('tab', { name: category, exact: true }).click();
       await expect(page.getByRole('tabpanel')).toHaveCount(1);
       await expect(page.getByRole('tabpanel', { name: category, exact: true })).toBeVisible();
@@ -148,6 +148,8 @@ async function contrastCheck() {
         await page.locator('.data-path').click();
         await expect.poll(() => instance.evaluate(() => global.__settingsReveal)).toBe(fs.realpathSync(data));
         await instance.evaluate(({ shell }) => { shell.showItemInFolder = global.__settingsOriginalReveal; });
+      } else if (category === '自动标签') {
+        await expect(page.getByLabel('启用分组 类别')).toBeChecked();
       } else if (category === '帮助与关于') {
         await expect(page.locator('.settings-info')).toContainText('Blender');
         await expect(page.locator('.help-note')).toContainText('不判断拓扑或动作');

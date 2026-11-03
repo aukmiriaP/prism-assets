@@ -1,0 +1,139 @@
+{
+ "description": "建议标签评测的真值。只来自数据集清单与目录/文件名约定，不来自模型输出；未匹配任何规则的素材不参与评测。",
+ "group": "category",
+ "rules": [
+  {
+   "label": "场景",
+   "source": "artstation-reference/manifest.csv category=environments（含游戏图标合集）",
+   "keys": [
+    "datasets/artstation-reference/images/environments/03lU72zRNP.jpg",
+    "datasets/artstation-reference/images/environments/27rUcsiPkf.jpg",
+    "datasets/artstation-reference/images/environments/4PHLoUkPCE.jpg",
+    "datasets/artstation-reference/images/environments/5CfrVvZkdr.jpg",
+    "datasets/artstation-reference/images/environments/Hun0gpmFIi.jpg",
+    "datasets/artstation-reference/images/environments/IkVr2liSYy.jpg",
+    "datasets/artstation-reference/images/environments/Tk3l6v6FNL.jpg",
+    "datasets/artstation-reference/images/environments/UfoMoVUIdn.jpg",
+    "datasets/artstation-reference/images/environments/V7PuFVUSSN.jpg",
+    "datasets/artstation-reference/images/environments/Vh9xxswD11.jpg",
+    "datasets/artstation-reference/images/environments/XePljiKiDn.jpg",
+    "datasets/artstation-reference/images/environments/YPJmqexQK3.jpg",
+    "datasets/artstation-reference/images/environments/fN7HnzWaI3.jpg",
+    "datasets/artstation-reference/images/environments/fiG3VpU0s3.jpg",
+    "datasets/artstation-reference/images/environments/jLTRjU2kfU.jpg",
+    "datasets/artstation-reference/images/environments/k24bhAT3qJ.jpg",
+    "datasets/artstation-reference/images/environments/uOiWuAC2ww.jpg",
+    "datasets/artstation-reference/images/environments/ujUFx4XNL9.jpg",
+    "datasets/artstation-reference/images/environments/vjIgdpYT9Z.jpg"
+   ]
+  },
+  {
+   "label": "道具",
+   "source": "artstation-reference/manifest.csv category=props（含游戏图标合集）",
+   "keys": [
+    "datasets/artstation-reference/images/props/1tYyO53ALV.jpg",
+    "datasets/artstation-reference/images/props/2Y2TBldBr5.jpg",
+    "datasets/artstation-reference/images/props/9gxugMhwtT.jpg",
+    "datasets/artstation-reference/images/props/MNWseCh5L0.webp",
+    "datasets/artstation-reference/images/props/NdECsCDctn.jpg",
+    "datasets/artstation-reference/images/props/O3B4mZPbLM.jpg",
+    "datasets/artstation-reference/images/props/QY6NibrTnZ.jpg",
+    "datasets/artstation-reference/images/props/QzHscqvd2l.jpg",
+    "datasets/artstation-reference/images/props/SJm7VqXxy8.webp",
+    "datasets/artstation-reference/images/props/UyO2PxTDpO.png",
+    "datasets/artstation-reference/images/props/aHiZJfaaXV.jpg",
+    "datasets/artstation-reference/images/props/bUQGnF469u.jpg",
+    "datasets/artstation-reference/images/props/cm3LVNFPz6.jpg",
+    "datasets/artstation-reference/images/props/gD7RvYvpFD.jpg",
+    "datasets/artstation-reference/images/props/hr7AHJ3MYF.jpg",
+    "datasets/artstation-reference/images/props/lNsX2gshUo.png",
+    "datasets/artstation-reference/images/props/nJOfHVsZNN.jpg",
+    "datasets/artstation-reference/images/props/pUpFRDEem5.jpg",
+    "datasets/artstation-reference/images/props/qE5SV5Wv84.webp"
+   ]
+  },
+  {
+   "label": "材质",
+   "source": "artstation-reference/manifest.csv category=materials（含游戏图标合集）",
+   "keys": [
+    "datasets/artstation-reference/images/materials/28NQVvYr9a.jpg",
+    "datasets/artstation-reference/images/materials/6AJHYnyEup.jpg",
+    "datasets/artstation-reference/images/materials/8w6F8b89qJ.jpg",
+    "datasets/artstation-reference/images/materials/9YV6bo3iXi.webp",
+    "datasets/artstation-reference/images/materials/C9r7VW4YNv.webp",
+    "datasets/artstation-reference/images/materials/I3vjHtl3jU.png",
+    "datasets/artstation-reference/images/materials/KjVqDP6Hak.jpg",
+    "datasets/artstation-reference/images/materials/LIIm5WcGMa.jpg",
+    "datasets/artstation-reference/images/materials/aYZtA8BIPT.jpg",
+    "datasets/artstation-reference/images/materials/cVSrKue7EU.jpg",
+    "datasets/artstation-reference/images/materials/m4cw6j3heL.png",
+    "datasets/artstation-reference/images/materials/oYVYU2EiPe.jpg",
+    "datasets/artstation-reference/images/materials/xMoS9yOx4S.jpg",
+    "datasets/artstation-reference/images/materials/y3TKESVMZh.jpg"
+   ]
+  },
+  {
+   "label": "UI",
+   "source": "artstation-reference/manifest.csv category=ui（含游戏图标合集）",
+   "keys": [
+    "datasets/artstation-reference/images/ui/7SMZGRvz6b.webp",
+    "datasets/artstation-reference/images/ui/DPL726XlpT.webp",
+    "datasets/artstation-reference/images/ui/HJKnjzTxtP.webp",
+    "datasets/artstation-reference/images/ui/LN1uRgnOQy.webp",
+    "datasets/artstation-reference/images/ui/M6tzuJYpWU.jpg",
+    "datasets/artstation-reference/images/ui/MKN0tecyO4.webp",
+    "datasets/artstation-reference/images/ui/mZ37FBcJgk.jpg",
+    "datasets/artstation-reference/images/ui/wu0BfUiVHR.webp"
+   ]
+  },
+  {
+   "label": "角色立绘",
+   "source": "starlight-cards 卡面插画",
+   "prefixes": [
+    "datasets/starlight-cards/"
+   ]
+  },
+  {
+   "label": "3D角色",
+   "source": "PMX 角色模型",
+   "suffixes": [
+    ".pmx"
+   ]
+  },
+  {
+   "label": "材质",
+   "source": "Prism PBR 材质样本",
+   "prefixes": [
+    "prism-material-samples/"
+   ]
+  },
+  {
+   "label": "图标",
+   "source": "应用图标文件",
+   "prefixes": [
+    "asset-search/build/Prism.iconset/",
+    "oh-my-cv/site/src/public/",
+    "asset-search/node_modules/playwright-core/lib/server/chromium/appIcon",
+    "asset-search/node_modules/playwright-core/lib/tools/dashboard/appIcon"
+   ]
+  },
+  {
+   "label": "软件截图",
+   "source": "Prism 与 ComfyUI 界面截图（文件名或目录可确认）",
+   "prefixes": [
+    "prism-ui-",
+    "prism-state-verification/",
+    "prism-pbr-verification/",
+    "prism-settings",
+    "prism-exclusion",
+    "asset-search/build/verification/",
+    "prism-motion-",
+    "prism-shared-",
+    "prism-head-stable-",
+    "prism-liv-garment",
+    "ComfyUI/comfy/comfy_types/examples/",
+    "汇报配图/"
+   ]
+  }
+ ]
+}
