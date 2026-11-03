@@ -23,7 +23,12 @@
     "test:retry-ui": "node tests/retry-ui.cjs",
     "test:exclusions-ui": "node tests/exclusions-ui.cjs",
     "test:appearance-ui": "node tests/appearance-ui.cjs",
-    "test:ui": "node tests/ui.cjs"
+    "test:ui": "node tests/ui.cjs",
+    "test:eval": ".venv/bin/python tests/eval_metrics.py && .venv/bin/python tests/eval_audit.py",
+    "eval": ".venv/bin/python evaluation/run.py score",
+    "eval:review": ".venv/bin/python evaluation/run.py review",
+    "eval:merge": ".venv/bin/python evaluation/run.py merge",
+    "eval:pool": ".venv/bin/python evaluation/run.py pool"
   },
   "dependencies": {
     "@tanstack/react-virtual": "^3.13.0",

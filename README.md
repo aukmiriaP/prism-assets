@@ -420,3 +420,23 @@ Electron 和服务之间通过 HTTP/IPC 解耦，便于下一阶段增加 DCC �
 `tests/art_queries.json` 固定 12 条真实素材查询与部分正例；`tests/art_baseline.py --output /tmp/art-baseline.json`
 在日常库的只读快照上比较聚合与模拟排除前后结果，不修改日常素材库。正例标注不穷尽，
 结果不能用于声称 nDCG、精确率或完整召回率。
+
+## 检索评测
+
+`evaluation/` 提供分级标注的检索评测：118 条中英文查询，覆盖场景、插画、材质、道具、UI、3D 模型等类型，
+共 669 条 0–3 分标注。评测在日常库的只读快照上比较关键词、语义、混合三种策略，
+计算 Recall@K、MRR、nDCG@K，并用配对自助法给出差异的置信区间。
+
+| 策略（日常库 446 个文件） | MRR | Recall@10 | nDCG@10 |
+|---|---:|---:|---:|
+| 关键词 | 0.076 | 0.041 | 0.053 |
+| 语义 | 0.775 | 0.817 | 0.758 |
+| 混合（默认） | **0.834** | **0.847** | **0.799** |
+
+```bash
+npm run test:eval   # 指标与复核流程单元测试
+npm run eval        # 生成 verification-eval/report.md
+npm run eval:review # 生成约 236 张的抽样复核页，验证标注可信度
+```
+
+标注方法、局限、分类型结果和改进方向见 [evaluation/README.md](evaluation/README.md)。
